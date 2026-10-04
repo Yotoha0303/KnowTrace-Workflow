@@ -113,6 +113,47 @@ jobs:
       - name: Run Go tests
         run: go test ./...
 
+  # 认证服务的 React 前端（`services/go-user-system/frontend`）。
+  # 与上面 go job 同形：**这个 job 之前也不存在**，导致它的 7 个 vitest 文件
+  # （11 个用例）不在任何自动化门里 —— 根 vitest 的 include 只含 `src/**` 与 `tests/**`，
+  # 这个目录两边都不是；CI 的三个 job 没有一个碰它。
+  #
+  # 它**不是本部署的运行时组件**：compose 无对应服务、go-user-system 的 Dockerfile
+  # 只编译 Go 二进制、nginx/Caddy 也不引用它。加门不等于把它变成线上件 ——
+  # 理由是「受版本控制的测试必须在门里」，见十环 `KT-GAP-32`。
+  #
+  # 为什么用 npm 而不是 pnpm：该目录是 `git subtree` 引入的上游仓库副本，
+  # 自带 `package-lock.json`（376 KB），不参与根 pnpm workspace。
+  # 它自己的 `lint` 脚本**当前跑不通**（详见 `docs/08` §2.3），所以这里**不跑 lint**。
+  auth-frontend:
+    name: Auth frontend (vitest + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/go-user-system/frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: services/go-user-system/frontend/package-lock.json
+
+      # 用 npm ci 而不是 install：锁文件在版本控制里，必须是可复现安装。
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run unit tests
+        run: npm test
+
+      # `build` 里含 `tsc`，所以它同时是一道类型检查。
+      - name: Build (tsc + vite)
+        run: npm run build
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest

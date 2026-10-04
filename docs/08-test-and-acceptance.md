@@ -26,9 +26,9 @@
 |---|---:|---:|---|
 | 根 vitest（`src/**` + `tests/**`） | **44** | **180 passed + 1 skipped** | `pnpm test`（CI `quality` job，每次 push） |
 | └ 其中条件跳过的 | 1 | 1 | 未配真实 API Key 时跳过，见 2.2 |
-| `services/go-user-system/frontend`（**独立 pnpm 工作区**） | 8 | 未采集 | **无自动化门** —— 见 2.3 |
+| `services/go-user-system/frontend`（**独立 npm 工作区**） | **7** | **11 passed** | CI `auth-frontend` job（**2026-10-04 新增**）—— 见 2.3 |
 | Go `_test.go`（`services/go-user-system`） | 26 | 未采集 | CI `go` job（`go test ./...`） |
-| E2E spec（`tests/e2e/`） | 18 | — | **无自动化门** —— 见 §5 |
+| E2E spec（`tests/e2e/`） | 18 | — | CI `e2e` job（**2026-10-04 起**，见 §5） |
 
 受版本控制的「单测文件」总数为 **52**，其中 **8 个**属于上述独立前端工作区，
 故根 vitest 实际纳入 **44** 个。**两个数字都真实，差在「谁的口径」**——引用时必须说明是哪一个。
@@ -42,6 +42,8 @@ git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -v '^tests/e2e/' | wc -l   
 git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -c '^services/go-user-system/frontend/'  # → 8
 # ③ 实际执行的真实数字（唯一权威）
 ./node_modules/.bin/vitest run
+# ④ 独立前端工作区（不在 ③ 的范围里，要单独跑）
+cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm test   # → 7 files / 11 tests
 ```
 
 
@@ -60,17 +62,49 @@ AI_INTEGRATION_API_KEY=... ./node_modules/.bin/vitest run src/server/ai/provider
 
 ### 2.3 独立前端工作区（`services/go-user-system/frontend`）
 
-该目录是 go-user-system 自带的 React 前端，**有自己的 `package.json` 与 vitest**，
-8 个测试文件不在根 vitest 的 `include` 范围内，**也不在 CI 里**
-（CI `go` job 只跑 `go test ./...`，不动这个前端）。
+该目录是 `git subtree`（提交 `c945952`）引入的 go-user-system 上游仓库副本，
+**自带 `package.json`、`package-lock.json`（376 KB）与自己的 vitest**，
+**不参与根的 pnpm workspace**，7 个 vitest 文件也不在根 vitest 的 `include` 范围内
+（根只含 `src/**` 与 `tests/**`，这个目录两边都不是）。
+
+> **它不参与本部署**：`compose*.yaml` 里没有对应服务，`nginx`/`Caddy` 不引用它，
+> 而 `services/go-user-system/Dockerfile` 只编译 Go 二进制、**不构建这个前端**。
+> **但「不属于运行时」不等于「可以没有门」**——受版本控制的测试必须在某个门里，
+> 否则它会腐烂而没人知道（见下）。
+
+**2026-10-04：已进 CI**（job `auth-frontend`，`npm ci` → `npm test` → `npm run build`）。
+本机实测基线：**`Test Files 7 passed (7)`、`Tests 11 passed (11)`**，构建通过
+（`tsc && vite build`，含类型检查）。
+
+**复算方法**：
 
 ```bash
-cd services/go-user-system/frontend && pnpm test   # 需要在其目录内单独装依赖
+cd services/go-user-system/frontend
+npm ci --no-audit --no-fund     # 用 npm，不是 pnpm：它有 package-lock.json
+npm test                        # vitest run
+npm run build                   # tsc && vite build
 ```
 
-**这是已知缺口**，与 E2E 同类（写了、有工具链、不在任何自动化门里）。
-它已记入 `03-验收清单.md` 与 `01-缺漏台账.md`（KT-GAP-06 的同类项）。
-在补进 CI 之前，**不要**把它的通过当成「测试齐全」的一部分。
+#### 2.3.1 它的 `lint` 脚本**当前跑不通**（已知，未修）
+
+```bash
+npm run lint   # ✗ Invalid option '--ext' - perhaps you meant '-c'?
+```
+
+两个独立的原因叠加：
+
+1. `package.json` 里写的是 `eslint . --ext ts,tsx --max-warnings 0`。
+   这条假设的是 **eslintrc 风格**；但仓库根有一个 **flat config `eslint.config.mjs`**，
+   eslint 一旦发现它就走 flat 模式，而 **flat 模式没有 `--ext`** → 报错。
+2. 把 `--ext` 去掉后仍然失败：根 `eslint.config.mjs` 的 `globalIgnores` 里有
+   `services/go-user-system/**`，把整个子树（**包括子目录自己的 `.eslintrc.cjs`**）一并忽略，
+   于是 `eslint .` 找不到任何可检查的文件。
+
+**所以 CI 里刻意不跑它的 lint** —— 加一道必然失败的门没有意义。
+要修就得先决定：把该前端的规则并进根 flat config，还是让子目录拥有自己的 flat config
+并在门里 `cd` 进去跑。**这是独立的一条缺口，已记入 `01-缺漏台账.md`（`KT-GAP-33`）。**
+**在修好之前，不要**把「`make check` 通过」读成「这个前端也 lint 过了」。
+
 
 
 ### 2.4 覆盖率基线（KT-GAP-07）
