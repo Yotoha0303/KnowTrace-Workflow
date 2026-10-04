@@ -61,3 +61,55 @@ docker compose --project-directory .   --env-file .env --env-file .env.observabi
 - 新增行为应同步更新测试与相关文档。
 
 提交代码即表示你同意按照项目的 [MIT License](LICENSE) 提供该贡献。
+
+## 目录与命名约定
+
+本节是把仓库里**已经在执行**的约定写下来。每条都可在代码里核验，不是新规定
+（核验方法：文件命名为 `git ls-files src` 全量枚举；错误码为 `grep -rhoE '"[A-Z][A-Z0-9_]{4,}"' src/`）。
+
+### 目录结构（实际，非规划）
+
+```text
+src/
+├── app/          Next.js App Router（直接路由，无 route group）
+├── components/   跨域复用的 UI 组件
+├── features/     业务域，每个域自带 service / repository / schema / components
+├── server/       只有 ai/ 与 db/（基础设施适配，不含业务规则）
+└── shared/       跨域共享：errors/、validation/、常量
+drizzle/          必须提交的 SQL 迁移（Drizzle Schema 不是唯一文档）
+tests/e2e/        Playwright 端到端
+services/go-user-system/   Go 认证服务（独立模块，有自己的 git 忽略与测试）
+deploy/           Ansible / Caddy / 监控 / systemd 等分层部署资产
+docs/             00–24 契约与说明 + adr/ + changes/ + 日常运维/
+scripts/          bootstrap / linux / ops 三类脚本
+```
+
+> `docs/06-architecture.md` 第 4 节保留着一份**实施前的规划目录树**，与实际结构有差异，
+> 该节开头已标注「不要逐条核对路径」。**以本节为准。**
+
+### 命名
+
+| 对象 | 约定 | 实例 |
+|---|---|---|
+| 源文件名 | **kebab-case**，一律小写（仓库内零例外） | `claim-evidence-revision.ts`、`workspace-switcher.tsx` |
+| React 组件 | 导出名 PascalCase，文件名仍 kebab-case | `export function WorkspaceSwitcher` ← `workspace-switcher.tsx` |
+| 业务域目录 | kebab-case | `data-transfer/`、`topic-synthesis/` |
+| 数据库表 / 列 | `snake_case`（SQL 与迁移里） | `data_import_objects.import_run_id` |
+| 错误码 | `SCREAMING_SNAKE_CASE`，**以域名为前缀**；经 `AppError(code, message)` 抛出 | `CAPTURE_VERSION_CONFLICT`、`WORKSPACE_ACCESS_DENIED` |
+| 测试文件 | 与被测文件**同目录**，后缀 `.test.ts(x)` | `src/features/workspace/policy.test.ts` ← `policy.ts` |
+
+**错误码为什么带域前缀**：错误码是给客户端分支用的契约。`NOT_FOUND` 这种无前缀名
+在两个域同时出现时就无法区分，而前缀让它天然自解释。新增错误码前先
+`grep -r` 一遍，避免同义不同名。
+
+**测试为什么同目录**：域内聚。**例外只有两处** —— `tests/e2e/` 是跨域的浏览器级用例，
+`src/client-server-boundary.test.ts` 是全局边界断言。
+
+### 项目纪律（评审必查）
+
+1. **依赖方向**：`Page/Component → Server Action/Query → Application Service → Repository/Provider → Drizzle/SDK`，**禁止反向**。完整禁令清单见 `docs/06-architecture.md` 第 5 节。
+2. **Workspace 边界**：所有可归属业务行带 `workspace_id`，隔离**只在应用层强制（数据库未开 RLS）**——新增任何读写入口必须显式带 `eq(<表>.workspaceId, scope.workspaceId)`。见 [ADR-0017](docs/adr/0017-workspace-isolation-model.md)。
+3. **服务端不信任客户端提交的身份与 Workspace**：只能用回带的令牌重新解析。客户端提交的 workspace 是「优先项」，越权在服务端被拒。
+4. **迁移只追加不修改**：已执行 Migration 不改，只新增；`docs/04` 的表清单必须与 `drizzle/` 一一对应。
+5. **部署命令只有一处权威写法**：`scripts/linux/deploy-observability.sh`（见上节）。**任何人不得手写 `docker compose up -d --build`。**
+6. **`docs/changes/` 先写后填**：行为变更先在 `docs/changes/` 落一份记录，再提交代码。

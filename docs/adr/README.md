@@ -20,6 +20,7 @@ ADR 用于记录重要技术决策及其背景，避免以后只知道“用了�
 - [ADR-0014：内置 go-user-system 源码并统一编排](0014-embedded-go-user-system.md)
 - [ADR-0015：按创建者隔离业务数据](0015-creator-scoped-data-access.md)
 - [ADR-0016：多平台客户端与原生令牌认证](0016-native-client-auth.md)
+- [ADR-0017：以 Workspace 为数据边界的应用层隔离模型](0017-workspace-isolation-model.md)
 
 状态说明：
 

@@ -1,5 +1,8 @@
 # 数据库设计
 
+> 最后核对：**2026-10-04**（本轮修订）。
+> 本行**只在内容变更时**更新，不随改名/格式化变动——约定见 [CONTRIBUTING.md](../CONTRIBUTING.md)「目录与命名约定」。
+
 ## 1. 设计原则
 
 - PostgreSQL 是唯一事实来源。
@@ -350,3 +353,136 @@ Migration `0012_reliable_knowledge_release.sql` 增加三类追加式实体，�
 发布服务重新读取当前结论及其冻结 Evidence，确定性检查证据数量、来源检查 ID、来源权威性、独立来源身份、强来源与职责分离。Migration `0013_release_deletion_policy.sql` 将 Release 到 Claim/ClaimReview 的外键改为级联删除：版本在来源存在期间不可变，但用户显式永久删除 Capture 时不会遗留内容副本。
 
 Migration `0014_independent_review_input_snapshot.sql` 为独立复核增加输入快照与哈希。当前结论、证据版本/哈希、快照有效性或来源权威性评估变化后，旧复核读取时标记 stale，不再满足发布门槛。
+
+## 10. 数据导入（Migration `0015`–`0019`）
+
+导入是「把另一套 KnowTrace 实例的导出文件并进来」的通道。设计上把「运行记录」「对象溯源」
+「内容归属」三件事分别落表，而不是把状态塞进 JSONB —— 因为它们各自有独立的唯一性约束与查询需求。
+
+### data_import_runs（`0015_data_import_runs.sql`）
+
+一次导入尝试一行，状态机为 `previewed → importing → completed | failed`。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | uuid | 主键 |
+| actor_id / actor_name | varchar(100) / varchar(255) | 发起导入的身份与显示名快照 |
+| file_name | varchar(255) | 上传文件名 |
+| file_sha256 | varchar(64) | 文件内容摘要，CHECK 长度必须为 64 |
+| format_version | varchar(20) | 导出格式版本 |
+| status | data_import_status | 见上状态机 |
+| staged_payload | jsonb | 预演阶段暂存的完整负载 |
+| preview_summary | jsonb | 预演结论（将新增/冲突/跳过的条数） |
+| result_summary | jsonb | 可空，完成后的实际结果 |
+| error_code / error_message | varchar(80) / varchar(1000) | 可空，失败时的脱敏错误 |
+| created_at / started_at / completed_at | timestamptz | 时间线 |
+
+索引：`(actor_id, created_at)`、`(status, created_at)`。
+`0015` 时的唯一键是「文件内容」，但去重语义后来被认为应该按「人 + 对象 + 版本」判，
+于是 `0018`/`0019` 把溯源搬到独立的 `data_import_objects` 表（见下）。
+
+### data_import_objects（`0018` 建立，`0019` 修唯一键）
+
+每个被导入的实体一行，记录「这次导入的哪个源对象，对应到本地哪个 ID」。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | uuid | 主键 |
+| actor_id | varchar(100) | 发起者 |
+| format_version | varchar(20) | 导出格式版本 |
+| object_type | varchar(40) | CHECK 限定为 capture/category/claim/evidence/attachment/source_check/review 七类 |
+| source_key | varchar(100) | 源实例里的稳定标识 |
+| local_id | uuid | 落到本地后的主键 |
+| content_hash | varchar(64) | 内容摘要，CHECK 长度 64 |
+| import_run_id | uuid | 外键 → `data_import_runs(id)`，**`ON DELETE RESTRICT`**（有溯源就不许删运行记录） |
+| created_at | timestamptz | 创建时间 |
+
+唯一键演进是这张表的重点：
+
+- `0018`：`unique(actor_id, object_type, source_key)`
+- `0019`：改为 `unique(actor_id, format_version, object_type, source_key)`
+
+**为什么要加 `format_version`**：同一个源对象在格式升级后可能被重新导入一次，
+而两次的语义不同。不含版本号的唯一键会把第二次导入判成重复而静默丢弃 —— 这是
+「幂等」与「重放」的边界，必须显式建模。
+
+### 内容归属（`0016_content_ownership.sql`）
+
+在 `captures` 与 `categories` 上增加 `created_by_id`（varchar(100)，默认 `legacy-local`）
+与 `created_by_name`（varchar(255)，默认「本地历史数据」），并把唯一键从全局改为**按创建者**：
+
+- `captures`：`unique(idempotency_key)` → `unique(created_by_id, idempotency_key)`
+- `categories`：`unique(normalized_name)` → `unique(created_by_id, normalized_name)`
+
+**这是本项目第一次把「谁的」写进唯一约束。** `0017`–`0021` 都在这条线上继续加维度
+（先加 visibility，再加 workspace），见第 11 节。
+
+### 共享与导入指纹（`0017_shared_admin_content_and_import_fingerprint.sql`）
+
+- 新增枚举 `capture_visibility`（`private` / `shared`），`captures.visibility` 默认 `private`。
+- 数据回填：`created_by_id IN ('local-owner','go-user:1')` 的历史记录置为 `shared`
+  —— 这两个身份是「管理员」，其内容对全站可见；其余保持 `private`。
+- `captures.import_fingerprint varchar(64)` 可空，配部分唯一索引
+  `unique(created_by_id, import_fingerprint) WHERE import_fingerprint IS NOT NULL`
+  —— 让重复导入可被识别，同时不惩罚「本来就没有指纹」的本地创建记录。
+
+**注意这张表在 `0020` 里被再次改键**：`created_by_id` 维度的唯一索引全部加上 `workspace_id`
+前缀。所以 `0016`/`0017` 建立的约束**在生产库里已被 `0020` 取代**，此处记录的是演进过程。
+
+## 11. Workspace 隔离（Migration `0020`–`0021`）
+
+Workspace 是当前最大的一次数据边界变更：**所有可归属的业务行都从「全局」收敛到「某个 Workspace 内」。**
+决策记录见 [ADR-0017](adr/0017-workspace-isolation-model.md)，
+架构侧影响见 [`06-architecture.md`](06-architecture.md) 第 5 节。
+
+### workspaces（`0020_workspace_foundation.sql`）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | uuid | 主键 |
+| name | varchar(100) | 展示名 |
+| slug | varchar(80) | CHECK `^[a-z0-9]+(?:-[a-z0-9]+)*$`；唯一 |
+| created_by_id / created_by_name | varchar(100) / varchar(255) | 创建者 |
+| created_at / updated_at | timestamptz | 时间 |
+
+索引：`unique(slug)`、`(created_by_id, created_at)`。
+
+### workspace_memberships
+
+主键 `(workspace_id, actor_id)`；`role` 为枚举 `workspace_member_role`（`owner` / `member`）。
+`workspace_id` 外键 `ON DELETE cascade`。另有 `(actor_id, workspace_id)` 索引用于「我属于哪些空间」。
+
+### 迁移的兼容策略（这段是 `0020` 最值得读的部分）
+
+`workspace_id` 是 `NOT NULL + DEFAULT 默认空间` 加的，先把历史数据整体归入一个默认空间，
+再靠回填把「已知的活动者」补成成员：
+
+1. 建一个固定 UUID 的默认空间：`00000000-0000-4000-8000-000000000001`（slug `legacy-default`）。
+2. 插入两条 owner 成员：`local-owner`、`go-user:1`。
+3. 用一条 `WITH known_actors AS (… UNION ALL …)` 从 `captures` / `categories` /
+   `claim_reviews` / `source_authority_assessments` / `independent_claim_reviews` /
+   `knowledge_releases` / `data_import_runs` **七张表**里收集全部出现过的 `actor_id`，
+   去重后按「是否管理员」定角色，`ON CONFLICT DO UPDATE` 补进成员表。
+4. 给 `captures` / `categories` / `data_import_runs` / `data_import_objects` 四张表
+   加 `workspace_id`（默认空间，外键 `ON DELETE restrict`）。
+5. 把 4 组唯一/普通索引**逐一 DROP 后按带 `workspace_id` 的新形态重建**（等价于「改键」）。
+
+**为什么用固定 UUID 而不是 `gen_random_uuid()`**：迁移是幂等的幂等关键 —— 这个 ID 会被
+单元测试与恢复演练引用，必须是可预期的常量。**为什么外键用 `restrict` 不用 `cascade`**：
+删空间不能顺手删掉里面的内容，那是最不该发生的一类误删。
+
+### 审计身份与执行者（`0021_workspace_audit_identity.sql`）
+
+`0020` 覆盖了「内容行」，`0021` 覆盖「审计行」—— AI 运行与主题综合也是可归属的对象。
+这里刻意**先带 DEFAULT 回填、再 `DROP DEFAULT`**：
+
+1. `ai_processing_runs` 加 `workspace_id`（默认空间）+ `actor_id` / `actor_name`
+   （默认 `legacy-unknown` / 「历史执行者未知」）。
+2. 回填 workspace：`UPDATE … SET workspace_id = capture.workspace_id FROM captures`
+   —— **不是全塞默认空间，而是跟随所属 Capture**，所以历史 AI 运行会落到它那条 Capture 所在的（默认）空间。
+3. 三列全部 `DROP DEFAULT` —— 此后新写入必须显式给出归属，不允许再落进「默认」。
+4. 加索引 `(workspace_id, actor_id, created_at)`。
+5. `topic_syntheses` 同样处理，但回填跟随的是 `categories.workspace_id`（综合挂在 Category 上）。
+
+**`DROP DEFAULT` 是这一步的真正目的**：加列时给默认值是为了让迁移能跑，
+跑完必须撤掉，否则「漏写归属」会静默落到默认空间而不是报错 —— 那正是隔离模型最怕的失败模式。

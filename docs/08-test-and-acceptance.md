@@ -1,5 +1,8 @@
 # 测试与验收
 
+> 最后核对：**2026-08-24**，依据 `87956c2`。
+> 本行**只在内容变更时**更新，不随改名/格式化变动——约定见 [CONTRIBUTING.md](../CONTRIBUTING.md)「目录与命名约定」。
+
 ## 1. 风险优先级
 
 1. 原文保存与修订历史。
@@ -12,6 +15,90 @@
 8. AI 候选不会绕过人工选择与证据门槛。
 
 ## 2. 单元测试
+
+### 2.1 当前规模（实测）
+
+> 下表是 **2026-10-04 实测**，不是预期值。数字来源与复算方法都写在「怎么复算」里，
+> 供下次更新时对照。**凡本节的数字都要带日期与复算命令**——旧版正是没有这两样，
+> 才让「36 文件 / 141 用例」这样的旧数字看起来像已验证的结论。
+
+| 范围 | 测试文件 | 用例 | 谁在跑 |
+|---|---:|---:|---|
+| 根 vitest（`src/**` + `tests/**`） | **44** | **180 passed + 1 skipped** | `pnpm test`（CI `quality` job，每次 push） |
+| └ 其中条件跳过的 | 1 | 1 | 未配真实 API Key 时跳过，见 2.2 |
+| `services/go-user-system/frontend`（**独立 pnpm 工作区**） | 8 | 未采集 | **无自动化门** —— 见 2.3 |
+| Go `_test.go`（`services/go-user-system`） | 26 | 未采集 | CI `go` job（`go test ./...`） |
+| E2E spec（`tests/e2e/`） | 18 | — | **无自动化门** —— 见 §5 |
+
+受版本控制的「单测文件」总数为 **52**，其中 **8 个**属于上述独立前端工作区，
+故根 vitest 实际纳入 **44** 个。**两个数字都真实，差在「谁的口径」**——引用时必须说明是哪一个。
+
+**怎么复算**（三条都要，缺一条就会得出错误对照）：
+
+```bash
+# ① 受版本控制的测试文件总数（不要用文件系统遍历，会算进 node_modules）
+git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -v '^tests/e2e/' | wc -l   # → 52
+# ② 其中不属于根 vitest 的（独立前端工作区）
+git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -c '^services/go-user-system/frontend/'  # → 8
+# ③ 实际执行的真实数字（唯一权威）
+./node_modules/.bin/vitest run
+```
+
+
+### 2.2 条件跳过的用例
+
+`src/server/ai/provider.integration.test.ts` 用 `describe.skipIf(!apiKey)` 包住
+「真实 AI Provider 集成」一组。未提供 API Key 时整组跳过 —— 这是**刻意**的：
+它要打真实供应商，不能进默认门。要跑它必须显式给凭据：
+
+```bash
+AI_INTEGRATION_API_KEY=... ./node_modules/.bin/vitest run src/server/ai/provider.integration.test.ts
+```
+
+**注意**：它被跳过时**不会**让 CI 变红，所以「CI 全绿」不代表这一组跑过。
+这正是「测试数量」与「测试覆盖」两件事的区别。
+
+### 2.3 独立前端工作区（`services/go-user-system/frontend`）
+
+该目录是 go-user-system 自带的 React 前端，**有自己的 `package.json` 与 vitest**，
+8 个测试文件不在根 vitest 的 `include` 范围内，**也不在 CI 里**
+（CI `go` job 只跑 `go test ./...`，不动这个前端）。
+
+```bash
+cd services/go-user-system/frontend && pnpm test   # 需要在其目录内单独装依赖
+```
+
+**这是已知缺口**，与 E2E 同类（写了、有工具链、不在任何自动化门里）。
+它已记入 `03-验收清单.md` 与 `01-缺漏台账.md`（KT-GAP-06 的同类项）。
+在补进 CI 之前，**不要**把它的通过当成「测试齐全」的一部分。
+
+
+### 2.4 覆盖率基线（KT-GAP-07）
+
+**状态：采集机制已建立，基线数字待 CI 首次产出后回填。**
+
+| 项 | 值 |
+| --- | --- |
+| provider | `@vitest/coverage-v8`，**与 vitest 同版本**（CI 里从 `vitest/package.json` 动态取版本） |
+| 配置 | `vitest.config.ts` 的 `coverage`：`provider: v8`、`reporter: text/json-summary/html` |
+| 统计范围 | `src/**/*.{ts,tsx}`，排除测试自身、`.d.ts`、`instrumentation.ts` |
+| 谁在跑 | CI `quality` job 的 **Collect coverage baseline** 步（每次 push 自然发生） |
+| 产物 | `coverage/coverage-summary.json` → CI artifact（保留 14 天） |
+| 阈值 | **暂空** —— 见下 |
+
+**为什么 provider 不写进 `package.json`**：本项目 `node_modules` 处于
+「与 pnpm store / virtual-store 记录不符」的状态（`node_modules/.modules.yaml` 记的
+virtual store 指向一个已不存在的位置），`pnpm add` 与 `npm install` 在本机都会失败，
+因此**无法在本地实测基线、也无法本地固化依赖**。与其把它写进 `package.json` 让本地
+`pnpm install` 失败，不如让 **CI 承担采集**——CI 每次全新安装，不受本机状态影响。
+
+**为什么现在不给阈值**：没有基线的阈值只会被绕过或被随便调大。顺序必须是
+「先采集若干次 → 看数字稳不稳 → 再定门」。回填时把四个数字（statements / branches /
+functions / lines）与日期写进本表，并同步写进 `vitest.config.ts` 的 `coverage.thresholds`。
+
+**本地怎么跑**（装好 provider 后）：`pnpm exec vitest run --coverage`。
+未装 provider 时报 `MISSING DEPENDENCY`，那是**预期**的，不是配置错误。
+
 
 ### Capture
 

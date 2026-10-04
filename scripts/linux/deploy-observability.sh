@@ -156,6 +156,48 @@ else
   fi
 fi
 
+# ---- 5b. 记录运行中 app 镜像的不可变身份 --------------------------------
+# 为什么需要（KT-GAP-09 / KT-GAP-21）：
+#   revision 能回答「跑的是不是这一版代码」，但回答不了「跑的是不是这一版**构建产物**」——
+#   同一份源码可以构建出不同的镜像。可变 tag（如 `:dev`、无 tag 的本地 build）让
+#   「线上那个镜像到底是哪来的」无法反查。
+#
+# 口径说明（实测，别误读）：
+#   * `RepoDigests` 只在镜像被 push/pull 过 registry 之后才有值。用 `build:` 本地构建的
+#     镜像**没有** RepoDigest —— 此时 `{{index .RepoDigests 0}}` 为空，这是**正常**的，
+#     不是错误。将来的方向是构建后 push 并在此记录 digest。
+#   * 因此这里**以 image id（`sha256:…`，不可变）为主**，digest 有则一并记录。
+#     判断方法：看输出里的 image id 是否非空即可。
+app_container="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 -E '^knowtrace-workflow-app-1$|^knowtrace-app-1$' || true)"
+app_image_ref=""; app_image_id=""; app_digest=""
+if [[ -n "$app_container" ]]; then
+  app_image_ref="$(docker inspect "$app_container" --format '{{.Config.Image}}' 2>/dev/null || true)"
+  app_image_id="$(docker inspect "$app_container" --format '{{.Image}}' 2>/dev/null || true)"
+  app_digest="$(docker inspect "$app_container" --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
+fi
+if [[ -n "$app_container" ]]; then
+  echo "  [..] 运行中镜像身份（用于反查构建产物）"
+  echo "       容器    : $app_container"
+  echo "       镜像引用 : ${app_image_ref:-unknown}"
+  echo "       image id: ${app_image_id:-<读不到>}"
+  if [[ -n "$app_digest" && "$app_digest" != "<no value>" ]]; then
+    echo "       digest  : $app_digest"
+  else
+    echo "       digest  : <无 —— 本地 build 的镜像没有 RepoDigest，属正常；以 image id 为准>"
+  fi
+else
+  echo "  [WARN] 找不到运行中的 app 容器 —— 跳过镜像身份记录。" >&2
+fi
+
+# 落盘留痕：让「某次部署对应哪个镜像」可事后反查，而不是只出现在终端回滚里。
+deploy_record="${DEPLOY_RECORD_FILE:-/var/log/knowtrace-deploy.log}"
+if [[ -n "$app_image_id" ]]; then
+  deploy_line="$(date -u '+%Y-%m-%dT%H:%M:%SZ') revision=${KNOWTRACE_APP_REVISION:0:12} running=${running_revision:0:12} image_id=$app_image_id digest=${app_digest:-none}"
+  echo "$deploy_line" >> "$deploy_record" 2>/dev/null     || echo "  [WARN] 无法写入部署记录 $deploy_record" >&2
+else
+  echo "  [WARN] 未取得 image id —— 本次不写部署记录。" >&2
+fi
+
 # 刷新版本指标，不等下一次日巡检（否则部署完到下次巡检之间指标还是旧结论）。
 "$script_directory/write-revision-metrics.sh" >/dev/null 2>&1 || true
 

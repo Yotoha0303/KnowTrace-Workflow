@@ -1,5 +1,8 @@
 # 服务端操作契约
 
+> 最后核对：**2026-10-01**，依据 `c4bdca7`。
+> 本行**只在内容变更时**更新，不随改名/格式化变动——约定见 [CONTRIBUTING.md](../CONTRIBUTING.md)「目录与命名约定」。
+
 ## 1. 当前接口策略
 
 Web 交互仍以 Server Components 和 Server Actions 为主，同时维护一组面向未来 App 的版本化 REST API：

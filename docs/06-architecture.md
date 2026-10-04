@@ -1,10 +1,23 @@
 # 技术架构
 
+> 最后核对：**2026-10-04**（本轮修订）。
+> 本行**只在内容变更时**更新，不随改名/格式化变动——约定见 [CONTRIBUTING.md](../CONTRIBUTING.md)「目录与命名约定」。
+
 ## 1. 架构结论
 
 首版采用单仓库、单 Next.js 应用、单 PostgreSQL 数据库。
 
-截至本次文档更新，Next.js 16.2 是 Active LTS 系列；初始化时应选择 16.2 的最新安全补丁，而不是 16.3 Preview。后续升级通过独立变更完成，不能只因为“更新”就默认使用预览版。
+本项目使用 **Next.js `16.3.1`**（见 `package.json` 的 `dependencies.next`，`node_modules` 实测同版本）。
+
+> 2026-10-04 更正：本文原先写「应选择 16.2 的最新安全补丁，而不是 16.3 Preview」。
+> 实测该指引**从未被遵循过**——`git log -S` 显示 `"next": "16.3.1"` 是在基线提交
+> `667241f`（`feat: establish KnowTrace MVP baseline`）一次性写定的，仓库里**从未存在过
+> 16.2 的版本记录**。所以这不是「升到了 16.3」，而是「选型文档与实际依赖从一开始就不一致」。
+> 因此不补 ADR（没有一次可记录的升级决策），直接以依赖为准修正本文。
+
+**依赖升级的纪律**：以 `package.json` 与锁文件为唯一事实源；本文只描述**架构含义**，
+不重复版本号。若某次升级改变了架构含义（例如 App Router 契约、构建输出结构），
+再补一条 ADR 记录取舍。
 
 ```mermaid
 flowchart LR
@@ -120,6 +133,17 @@ Page / Component
 - Server Action 保存供应商 SDK 原始对象。
 - Provider Adapter 更新 Capture。
 - Repository 返回 Next.js Response。
+
+### 5.1 Workspace 是横切的数据边界
+
+所有可归属的业务行都带 `workspace_id`（`captures` / `categories` / `data_import_runs` /
+`data_import_objects` / `ai_processing_runs` / `topic_syntheses`）。数据访问层在解析身份之后
+必须先解析 Workspace，并且**每条查询都显式带 `eq(<表>.workspaceId, scope.workspaceId)`**
+（见 `src/features/auth/access.ts`）。
+
+隔离**只在应用层强制，数据库未启用 RLS**——所以「新增读写入口时必须带上 workspace 条件」
+不是建议而是硬约束，漏一处即跨空间读。为什么不用 RLS、以及被否的其它替代方案，
+见 [ADR-0017](adr/0017-workspace-isolation-model.md)。
 
 ## 6. AI 调用模式
 

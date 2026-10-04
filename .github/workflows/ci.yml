@@ -67,6 +67,25 @@ jobs:
       - name: Run unit tests
         run: pnpm test
 
+      # 覆盖率基线（KT-GAP-07）。
+      # provider 故意**不写进 package.json**：先让 CI 每次采集，等基线稳定后再连同
+      # 阈值一起固化（见 docs/08 §2.4）。版本从已装的 vitest 推导，避免与 vitest 错配。
+      # 与上一步重复跑一次测试（约 +1 分钟）是有意的：`pnpm test` 是 CONTRIBUTING 的
+      # 规范入口，不应因缺 provider 而失败。
+      - name: Collect coverage baseline
+        run: |
+          VITEST_VERSION="$(node -p "require('vitest/package.json').version")"
+          pnpm add -D "@vitest/coverage-v8@${VITEST_VERSION}"
+          pnpm exec vitest run --coverage
+
+      - name: Upload coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-summary
+          path: coverage/coverage-summary.json
+          retention-days: 14
+
       - name: Build production bundle
         run: pnpm build
 
@@ -93,3 +112,66 @@ jobs:
       # 单元测试照常执行。要跑集成测试需要另配 MySQL service。
       - name: Run Go tests
         run: go test ./...
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: knowtrace
+          POSTGRES_USER: knowtrace
+          POSTGRES_PASSWORD: knowtrace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowtrace -d knowtrace"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # 与 quality job 同一套空库。Playwright 的 webServer 会起 `pnpm dev`。
+      DATABASE_URL: postgres://knowtrace:knowtrace@localhost:5432/knowtrace
+      AI_DEFAULT_PROVIDER: mock
+      # 不配 AUTH_E2E_* / 管理员凭据：那 10 个需要真实账号的 spec 会自行 test.skip()。
+      # 这是刻意的——见下方「为什么允许部分 skip」。
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations to an empty database
+        run: pnpm db:migrate
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        run: pnpm test:e2e
+
+      # 报告在成功时也要留痕——「跑过且全绿」本身就是证据。
+      # 它是 KT-GAP-06 的正向验收产物（一次由 CI 自然触发的成功运行）。
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
