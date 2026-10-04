@@ -64,14 +64,19 @@ test("capture → AI review → accepted knowledge structure", async ({ page }) 
   await expect(
     page.getByLabel("OpenAI 连接方式").locator('option[value="ccswitch"]'),
   ).toHaveCount(0);
+  // 2026-10-04 更正：本段原先断言手工的「测试当前供应商」按钮与门禁按钮
+  // 「先测试当前供应商，再开始 AI 整理」。自动检测落地后（KT-DEFER-002，
+  // 见 docs/changes/2026-10-01-体验三项修复.md），用户不再需要先手工测试，
+  // 于是改为「模型测试（可选）」+ 一行说明文字。此断言到 2026-10-04 才被 CI 发现过期——
+  // 因为在此之前 E2E **不在任何自动化门里**（KT-GAP-06）。
   await expect(
-    page.getByRole("button", { name: "测试当前供应商", exact: true }),
+    page.getByRole("button", { name: "模型测试（可选）", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "先测试当前供应商，再开始 AI 整理" }),
-  ).toBeDisabled();
+    page.getByText("自动检测到可用路由后即可直接整理"),
+  ).toBeVisible();
   await expect(page.locator(".connection-check")).toContainText(
-    /正在自动检测|已检测到|未能连接/,
+    /等待检测|正在自动检测|未能连接|正在测试/,
   );
   await expect(page.getByLabel("CC-Switch 地址")).not.toBeVisible();
   await page.getByText("高级设置（通常无需修改）").click();
