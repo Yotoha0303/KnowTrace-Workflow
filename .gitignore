@@ -31,6 +31,8 @@ offsite-key.txt
 offsite-identity.txt
 client_secret_*.json
 *service-account*.json
+邮箱授权码.txt
+.env.local
 
 # 运维脚本的报告产物。权威位置是 /var/lib/knowtrace/reports（systemd 单元用
 # --json 显式指定）；但在仓库检出里**交互式**跑脚本时，ops-common.sh 会回落到
