@@ -170,7 +170,7 @@ step "系统依赖"
 # （tar / sha256sum / find 等属 Ubuntu essential 或 coreutils，必然存在，不列。）
 # 与 deploy/ansible/group_vars/all.yml 的 baseline_packages 一一对应（改一处、另一处同步）。
 # unattended-upgrades 这里只装包；**配置**（20auto-upgrades）由 Ansible roles/baseline 负责。
-DEPS=(docker.io docker-compose-v2 nginx caddy rclone age fail2ban git curl ca-certificates jq util-linux openssl python3 unattended-upgrades lynis)
+DEPS=(docker.io docker-compose-v2 nginx caddy rclone age fail2ban git curl ca-certificates jq util-linux openssl python3 unattended-upgrades lynis rkhunter)
 if [[ "$SKIP_DEPS" == true ]]; then
   info "已按 --skip-deps 跳过"
 else

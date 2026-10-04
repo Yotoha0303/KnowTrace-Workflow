@@ -140,6 +140,8 @@ BACKUP_MIN_KEEP="$(ops_conf_int BACKUP_MIN_KEEP 7)"
 WRITE_WINDOW="$(ops_conf_get MONTHLY_WRITE_WINDOW "")"
 APPLY_TIMEOUT="$(ops_conf_int APPLY_TIMEOUT_SECONDS 1800)"
 DOC_STALE_DAYS="$(ops_conf_int THRESHOLD_DOC_STALE_DAYS 35)"
+THRESH_LYNIS_INDEX_OK="$(ops_conf_int THRESHOLD_LYNIS_INDEX_OK 80)"
+THRESH_LYNIS_INDEX_WARN="$(ops_conf_int THRESHOLD_LYNIS_INDEX_WARN 60)"
 
 is_root=0
 [[ "${EUID:-$(id -u 2>/dev/null || printf '1')}" == "0" ]] && is_root=1
@@ -489,9 +491,34 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 6. 故障记录复盘
+# 6. 主机基线审计（Lynis）
 # ----------------------------------------------------------------------------
-ops_section "6. 故障记录复盘"
+ops_section "6. 主机基线审计（Lynis）"
+
+if ! ops_have_cmd lynis; then
+    ops_info "lynis" "未安装 lynis，跳过主机基线审计"
+else
+    # 每月跑一次完整审计（约 1-2 分钟），解析硬化指数
+    lynis_out="$(lynis audit system --no-colors 2>/dev/null || printf '')"
+    index="$(printf '%s\n' "$lynis_out" | sed -n 's/^[[:space:]]*Hardening index[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+    if [[ "$index" =~ ^[0-9]+$ ]]; then
+        if (( index >= THRESH_LYNIS_INDEX_OK )); then
+            ops_ok "lynis.index" "硬化指数 ${index}（≥ ${THRESH_LYNIS_INDEX_OK}）"
+        elif (( index >= THRESH_LYNIS_INDEX_WARN )); then
+            ops_warn "lynis.index" "硬化指数 ${index}（建议 ≥ ${THRESH_LYNIS_INDEX_OK}）"
+        else
+            ops_fail "lynis.index" "硬化指数 ${index}（低于 ${THRESH_LYNIS_INDEX_WARN}）"
+        fi
+        [[ "$OPS_QUIET" != "1" ]] && printf '%s\n' "$lynis_out" | grep -E '\[[A-Z]+-[0-9]+\]' | head -n 15 | ops_indent
+    else
+        ops_warn "lynis.index" "无法解析硬化指数（lynis 输出异常）"
+    fi
+fi
+
+# ----------------------------------------------------------------------------
+# 7. 故障记录复盘
+# ----------------------------------------------------------------------------
+ops_section "7. 故障记录复盘"
 
 # 记录可能在两处：仓库 docs/日常运维/ 与 RECORD_DIR
 scan_record_dirs=()
@@ -549,9 +576,9 @@ fi
 ops_fact "复盘要求字段：时间/现象/影响范围/首次发现方式/排查命令/关键证据/根因或当前推断/处理动作/验证结果/遗留风险/后续改进"
 
 # ----------------------------------------------------------------------------
-# 7. 文档更新检查
+# 8. 文档更新检查
 # ----------------------------------------------------------------------------
-ops_section "7. 文档更新检查"
+ops_section "8. 文档更新检查"
 
 if [[ -d "$PROJECT_DIR/.git" ]]; then
     dirty="$(git -C "$PROJECT_DIR" status --short 2>/dev/null | ops_count_lines)"
@@ -606,7 +633,7 @@ fi
 # ----------------------------------------------------------------------------
 # 8. 执行写操作
 # ----------------------------------------------------------------------------
-ops_section "8. 执行计划中的动作"
+ops_section "9. 执行计划中的动作"
 
 # ---- 8.1 停止日志栈（Loki + Alloy）----
 if action_enabled "stop-logs" MONTHLY_STOP_LOKI; then
@@ -731,14 +758,14 @@ fi
 # ----------------------------------------------------------------------------
 # 9. 结束
 # ----------------------------------------------------------------------------
-ops_section "9. 月运维结束"
+ops_section "10. 月运维结束"
 
 ops_fact "月清单对照：隔离恢复演练 / 依赖更新检查 / 故障记录复盘 / 文档更新"
 ops_fact "本次未执行的动作（演练模式或被开关关闭）请对照第 1 节计划人工确认"
 ops_fact "恢复演练通过 ≠ 备份一定能恢复生产；演练环境的验证结论需在记录中写明范围"
 
 if (( MONTHLY_WRITE_RECORD == 1 )); then
-    ops_section "10. 生成月度记录骨架"
+    ops_section "11. 生成月度记录骨架"
     record_dir="$RECORD_DIR"
     if [[ -d "$record_dir" ]] || mkdir -p -- "$record_dir" 2>/dev/null; then
         year_month="$(date -u '+%Y%m')"
