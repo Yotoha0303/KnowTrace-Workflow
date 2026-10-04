@@ -168,7 +168,9 @@ step "系统依赖"
 # auto 依赖、python3 来自 python3-minimal），所以"本机能跑"不等于"下一台也能"。
 # 2026-10-02 写本脚本时正是漏了这两个 —— 补上。
 # （tar / sha256sum / find 等属 Ubuntu essential 或 coreutils，必然存在，不列。）
-DEPS=(docker.io docker-compose-v2 nginx caddy rclone age fail2ban git curl ca-certificates jq util-linux openssl python3)
+# 与 deploy/ansible/group_vars/all.yml 的 baseline_packages 一一对应（改一处、另一处同步）。
+# unattended-upgrades 这里只装包；**配置**（20auto-upgrades）由 Ansible roles/baseline 负责。
+DEPS=(docker.io docker-compose-v2 nginx caddy rclone age fail2ban git curl ca-certificates jq util-linux openssl python3 unattended-upgrades)
 if [[ "$SKIP_DEPS" == true ]]; then
   info "已按 --skip-deps 跳过"
 else
@@ -307,6 +309,8 @@ info "     ufw allow <你的SSH端口>/tcp && ufw allow 80/tcp && ufw allow 443/
 info "     ufw default deny incoming && ufw default allow outgoing && ufw --force enable"
 info "  2) SSH 加固（改错即失联）：装公钥 → **另开窗口验证密钥能登录** → 才关密码登录"
 info "     样例：docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/配置样例/00-knowtrace-hardening.conf"
+info "  【更省事】以上 Day 0 加固（UFW / sshd / sysctl / fail2ban）可交给幂等的 Ansible："
+info "     cd /opt/knowtrace/deploy/ansible && ansible-playbook site.yml（先 --tags access 装公钥并验证，再全量）"
 info ""
 info "端口与地址：应用 127.0.0.1:3000（经 Caddy → nginx），Grafana 需 SSH 隧道到 127.0.0.1:3001"
 [[ -n "$DOMAIN" ]] && info "站点：https://$DOMAIN"

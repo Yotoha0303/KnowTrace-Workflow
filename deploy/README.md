@@ -26,8 +26,7 @@ deploy/
 ├── grafana/      数据源与看板的 provisioning
 ├── monitoring/   Prometheus 配置 / 规则 / blackbox 探针
 ├── nginx/        127.0.0.1:8080 的站点配置（Caddy 的下游）
-├── systemd/      备份与异地备份两组单元
-└── config_backup/  迁入本目录前的原始结构热备份（见下）
+└── systemd/      备份与异地备份两组单元
 ```
 
 **三个刻意的"不在这里"**：
@@ -38,9 +37,7 @@ deploy/
 | `deploy/ops/` | [`../scripts/ops/`](../scripts/ops/) 已是权威（22 个文件）。再建一个就是两个 ops 目录 |
 | `deploy/logstash/` | 已随 ELK → PLG 删除，换成 [`alloy/`](alloy/)（见 [变更记录](../docs/changes/2026-10-03-ELK换PLG与deploy重构及Ansible引入.md)） |
 
-`config_backup/` 是 P1 重构时把原结构整体挪进来的热备份。
-**P1 已完成并验证，它的用途已经结束** —— 保留是因为删除需要单独确认，
-不是因为它还有用。
+`config_backup/` 是 P1 重构时的热备份，**P1 完成后已并入、目录已删除**（此处仅留此说明，不再出现在目录树里）。
 
 ---
 
@@ -51,8 +48,8 @@ deploy/
 
 | 现有 | 归宿 | 现状 |
 | --- | --- | --- |
-| `install.sh` 的 apt 装包段 | → Ansible（`roles/baseline`） | **暂未删**，两者共存 |
-| UFW / sshd / sysctl | → Ansible（`roles/{firewall,hardening}`） | **暂未删**，两者共存 |
+| `install.sh` 的 apt 装包段 | → Ansible（`roles/baseline`） | **暂未删**，两者共存（2026-10-04 已对齐包清单） |
+| UFW / sshd / sysctl | → Ansible（`roles/{firewall,hardening}`） | ✅ 已从 install.sh 移除，install.sh 只打印指引 |
 | `prepare-host.sh` 的建卷 / nginx 站点 / 释放 :80 | **留在原处** | 它们是"让 Compose 能起来"的前置，属 **Day 1 的地基**，不是 OS 加固 |
 | `bootstrap.sh --all` 的四阶段 | **保留** | 它是编排入口；Day 0 部分将来改为调用 Ansible |
 
