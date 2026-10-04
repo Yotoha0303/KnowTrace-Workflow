@@ -124,8 +124,16 @@ test("capture → AI review → accepted knowledge structure", async ({ page }) 
   await page.getByLabel("处理引擎").selectOption("mock");
   await expect(page.getByText(/将分析已保存版本 v\d+/)).toBeVisible();
 
-  const savedContent = `${await page.getByLabel("原文").inputValue()}\n补充一段需要先保存的内容。`;
-  await page.getByLabel("原文").fill(savedContent);
+  // 「原文」正文框的范围限定定位。
+  // 为什么不能直接用「原文」这个 label：页面上还有「原文来源摘录（必填）…」——
+  // 它的可访问名同样含「原文」，于是按 label 定位在主张面板出现后会命中 2 个元素，
+  // Playwright 的 strict mode 直接报错。这个漂移同样是**首次进 CI 才被发现**的。
+  const contentField = page
+    .locator("label.field")
+    .filter({ has: page.locator('span:text-is("原文")') })
+    .locator("textarea");
+  const savedContent = `${await contentField.inputValue()}\n补充一段需要先保存的内容。`;
+  await contentField.fill(savedContent);
   await expect(page.getByText("有未保存修改，AI 暂时不会分析这些内容。")).toBeVisible();
   await page.getByRole("button", { name: /先保存，再开始 AI 整理/ }).click();
   await expect(page.getByText(/检测到原始记录有未保存修改/)).toBeVisible();
@@ -159,7 +167,7 @@ test("capture → AI review → accepted knowledge structure", async ({ page }) 
   await page.getByRole("button", { name: /接受当前选择/ }).click();
   await expect(page.getByText("生成一份可审阅的整理建议")).toBeVisible();
   await expect(page.getByLabel("标题")).toHaveValue(title);
-  await expect(page.getByLabel("原文")).toHaveValue(/将不确定输入整理为结构化、系统化内容/);
+  await expect(contentField).toHaveValue(/将不确定输入整理为结构化、系统化内容/);
   await page.locator(".history-list summary").click();
   await expect(page.getByText(/修改后接受/)).toBeVisible();
   await expect(page.getByRole("button", { name: "整体回退这次整理" })).toBeVisible();
@@ -170,7 +178,7 @@ test("capture → AI review → accepted knowledge structure", async ({ page }) 
   await page.getByRole("button", { name: "整体回退这次整理" }).click();
   await expect(page.getByText("恢复采纳前的标题、内容类型、原文和 AI 分类。")).toBeVisible();
   await page.getByRole("button", { name: "确认整体回退" }).click();
-  await expect(page.getByLabel("原文")).toHaveValue(savedContent);
+  await expect(contentField).toHaveValue(savedContent);
   await page.locator(".history-list summary").click();
   await expect(page.getByText("已整体回退")).toBeVisible();
   await expect(page.getByRole("button", { name: "整体回退这次整理" })).toHaveCount(0);

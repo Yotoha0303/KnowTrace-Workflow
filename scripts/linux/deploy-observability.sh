@@ -199,7 +199,25 @@ else
 fi
 
 # 刷新版本指标，不等下一次日巡检（否则部署完到下次巡检之间指标还是旧结论）。
-"$script_directory/write-revision-metrics.sh" >/dev/null 2>&1 || true
+#
+# 2026-10-04 实测：这一步原先写 `|| true` 把失败静默掉了，而**它确实静默失败过一次**——
+# 本次部署后 `knowtrace-app-revision.prom` 仍停在 10-03 的旧值（expected=d8c650f /
+# running=8c2bae / match=0），而部署输出照常打印「运行态与部署目录一致」。
+# 手工再跑同一个脚本立刻成功（match=1），说明脚本本身没问题，是**这一次调用**失败。
+# 这正是本项目反复吃亏的那一类：**刷新失败而无人知晓，指标停在旧值**。
+# 所以这里改为把结果**读回来打印**，成功要看见、失败也要看见。
+if "$script_directory/write-revision-metrics.sh" >/dev/null 2>&1; then
+  refreshed_match="$(grep -E '^knowtrace_app_revision_match '     "$project_directory/runtime/node-exporter/knowtrace-app-revision.prom" 2>/dev/null | awk '{print $2}' || true)"
+  if [[ -n "$refreshed_match" ]]; then
+    echo "  [ OK ] 版本指标已刷新：knowtrace_app_revision_match=$refreshed_match"
+  else
+    echo "  [WARN] 版本指标里没有 match 样本（复核判定失败）——" >&2
+    echo "         这会让 knowtrace.revision 组的 KnowTraceAppRevisionCheckNotRunning 去报。" >&2
+  fi
+else
+  echo "  [WARN] 刷新版本指标失败 —— 指标可能停在旧值，下一次 daily-ops 会重试。" >&2
+  echo "         手动核对：bash $script_directory/write-revision-metrics.sh" >&2
+fi
 
 echo "核心监控已部署；所有管理端口只绑定 127.0.0.1。"
 
