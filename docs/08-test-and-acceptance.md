@@ -75,7 +75,36 @@ cd services/go-user-system/frontend && pnpm test   # 需要在其目录内单独
 
 ### 2.4 覆盖率基线（KT-GAP-07）
 
-**状态：采集机制已建立，基线数字待 CI 首次产出后回填。**
+**状态：已采集到基线并设了防回退阈值（2026-10-04）。**
+
+### 基线数字（2026-10-04，CI run `37204939189` 的 `coverage-summary` artifact）
+
+| 指标 | 覆盖 | 分子/分母 |
+| --- | ---: | --- |
+| lines | **29.36%** | 1486 / 5060 |
+| statements | **28.72%** | 1578 / 5493 |
+| functions | **25.57%** | 313 / 1224 |
+| branches | **21.47%** | 943 / 4391 |
+
+纳入统计的文件 **144 个**（`src/**/*.{ts,tsx}`，排除测试自身、`.d.ts`、`instrumentation.ts`）。
+
+> **这个数字偏低，如实记录、不修饰。** 原因是分母把整个 `src/` 都算进去了——
+> 其中包含大量 React 组件与页面，而现有单测以 node 环境下的服务层/纯函数为主。
+> 「覆盖率低」在这里的准确含义是「**UI 层没有单测**」，不是「服务层没测」。
+> UI 层由 E2E 覆盖（§5，2026-10-04 起已进 CI）。
+
+**阈值（防回退棘轮，不是目标）**：写进 `vitest.config.ts` 的 `coverage.thresholds`，
+取值**略低于**上面的基线（留约 1 个百分点余量以免因无关波动报红）：
+
+| 指标 | 阈值 | 基线 |
+| --- | ---: | ---: |
+| lines | 28 | 29.36 |
+| statements | 27 | 28.72 |
+| functions | 24 | 25.57 |
+| branches | 20 | 21.47 |
+
+**这是「不许掉下去」的门，不是「已经够高」的证明。** 想把阈值往上抬，
+先写测试把实际值抬上去，再抬阈值——顺序不能反。
 
 | 项 | 值 |
 | --- | --- |
@@ -84,7 +113,7 @@ cd services/go-user-system/frontend && pnpm test   # 需要在其目录内单独
 | 统计范围 | `src/**/*.{ts,tsx}`，排除测试自身、`.d.ts`、`instrumentation.ts` |
 | 谁在跑 | CI `quality` job 的 **Collect coverage baseline** 步（每次 push 自然发生） |
 | 产物 | `coverage/coverage-summary.json` → CI artifact（保留 14 天） |
-| 阈值 | **暂空** —— 见下 |
+| 阈值（棘轮） | lines 28 / statements 27 / functions 24 / branches 20 —— 见上表 |
 
 **为什么 provider 不写进 `package.json`**：本项目 `node_modules` 处于
 「与 pnpm store / virtual-store 记录不符」的状态（`node_modules/.modules.yaml` 记的
@@ -92,9 +121,8 @@ virtual store 指向一个已不存在的位置），`pnpm add` 与 `npm install
 因此**无法在本地实测基线、也无法本地固化依赖**。与其把它写进 `package.json` 让本地
 `pnpm install` 失败，不如让 **CI 承担采集**——CI 每次全新安装，不受本机状态影响。
 
-**为什么现在不给阈值**：没有基线的阈值只会被绕过或被随便调大。顺序必须是
-「先采集若干次 → 看数字稳不稳 → 再定门」。回填时把四个数字（statements / branches /
-functions / lines）与日期写进本表，并同步写进 `vitest.config.ts` 的 `coverage.thresholds`。
+**阈值怎么定的**：先采到基线（上表），再取略低于基线的整数做棘轮。没有基线的阈值
+只会被绕过或被随便调大；有了基线，阈值就只承担「防止悄悄退步」这一件事。
 
 **本地怎么跑**（装好 provider 后）：`pnpm exec vitest run --coverage`。
 未装 provider 时报 `MISSING DEPENDENCY`，那是**预期**的，不是配置错误。

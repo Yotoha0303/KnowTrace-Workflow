@@ -31,8 +31,16 @@ export default defineConfig({
         "src/**/*.d.ts",
         "src/instrumentation.ts",
       ],
-      // thresholds：待 CI 首次产出 json-summary 后回填（见 docs/08 §2.4）。
-      // 回填之前**故意不给数字**——没有基线的阈值只会被绕过。
+      // thresholds：**防回退棘轮**，取值略低于 2026-10-04 的实测基线
+      // （lines 29.36 / statements 28.72 / functions 25.57 / branches 21.47）。
+      // 这是「不许掉下去」的门，不是「已经够高」的证明——想往上抬先补测试。
+      // 基线明细见 docs/08 §2.4。
+      thresholds: {
+        lines: 28,
+        statements: 27,
+        functions: 24,
+        branches: 20,
+      },
     },
   },
 });
