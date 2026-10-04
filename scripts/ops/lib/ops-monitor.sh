@@ -106,24 +106,61 @@ ops_monitor_check() {
     fi
 
     # ---- Alertmanager: 告警与链路新鲜度 ----
-    local alerts_json firing
+    #
+    # /api/v2/alerts 返回的**不只是**正在响的告警。status.state 只有三态
+    # （active / suppressed / unprocessed，见 Alertmanager 自身的
+    # alertmanager_alerts{state=...} 指标），被 inhibit_rules 抑制掉的、以及还没
+    # 处理完的都在同一个数组里。直接数数组长度会把它们一并算成「告警」，
+    # 所以这里显式只取 active。
+    #
+    # severity=info 是本项目自定义的「事实记录」级别：见 init-observability-env.sh，
+    # 它被单独路由到 local-only —— 只进 UI、不进邮箱，为的就是不变成每天一封的噪声。
+    # 但它同样会出现在这个数组里；若与 warning/critical 一起计入阈值，一条
+    # 「运行态只是落后了、应用行为没变」的 info 就会天天把日报顶成 WARN，
+    # 而 WARN 是要留给人看真问题的。因此 info 单独计数、单独记一行 INFO。
+    #
+    # 严重度只报不升级：critical 不会把巡检结论抬到 FAIL。原因是
+    # knowtrace_ops_report_worst_level 又喂给 KnowTraceOpsCheckFailed，
+    # 一旦 FAIL 会让下一天的巡检再次看到 critical —— 自锁成永久 FAIL。
+    # 「谁来叫醒人」是设计问题，先如实把数字摆出来。
+    local alerts_json firing firing_info sev_critical sev_warning
     alerts_json="$(ops_monitor_url "$alertmanager_base/api/v2/alerts")"
     if [[ -z "$alerts_json" ]]; then
         ops_warn "mon.alertmanager" "无法访问 Alertmanager API: $alertmanager_base/api/v2/alerts"
     elif ! printf '%s' "$alerts_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
         ops_warn "mon.alertmanager" "Alertmanager 返回了非预期格式，无法解析告警数"
     else
-        firing="$(printf '%s' "$alerts_json" | jq -r 'length' 2>/dev/null)"
+        # 缺 severity 标签的按 warning 计 —— 宁可多报，不要因为少一个标签就静默漏掉。
+        firing="$(printf '%s' "$alerts_json" | jq -r \
+            '[.[] | select(.status.state == "active") | select((.labels.severity // "warning") != "info")] | length' 2>/dev/null)"
+        firing_info="$(printf '%s' "$alerts_json" | jq -r \
+            '[.[] | select(.status.state == "active") | select((.labels.severity // "") == "info")] | length' 2>/dev/null)"
+        sev_critical="$(printf '%s' "$alerts_json" | jq -r \
+            '[.[] | select(.status.state == "active") | select((.labels.severity // "") == "critical")] | length' 2>/dev/null)"
+        sev_warning="$(printf '%s' "$alerts_json" | jq -r \
+            '[.[] | select(.status.state == "active") | select((.labels.severity // "") == "warning")] | length' 2>/dev/null)"
         [[ "$firing" =~ ^[0-9]+$ ]] || firing=0
+        [[ "$firing_info" =~ ^[0-9]+$ ]] || firing_info=0
+        [[ "$sev_critical" =~ ^[0-9]+$ ]] || sev_critical=0
+        [[ "$sev_warning" =~ ^[0-9]+$ ]] || sev_warning=0
         if (( firing > thresh_firing )); then
-            ops_warn "mon.alerts-firing" "${firing} 条告警处于 active 状态（阈值 ≤ ${thresh_firing}）"
+            ops_warn "mon.alerts-firing" "${firing} 条告警处于 active 状态（阈值 ≤ ${thresh_firing}；其中 critical ${sev_critical} / warning ${sev_warning}）"
             if [[ "$OPS_QUIET" != "1" ]]; then
                 printf '%s' "$alerts_json" | jq -r \
-                    '.[] | "  \(.labels.alertname // "?") [\(.status.state)] \(.labels.instance // .labels.job // "")"' \
+                    '.[] | select(.status.state == "active") | select((.labels.severity // "warning") != "info")
+                     | "  \(.labels.alertname // "?") [\(.labels.severity // "-")] \(.labels.instance // .labels.job // "")"' \
                     2>/dev/null | head -n 10 | ops_indent
             fi
         else
-            ops_ok "mon.alerts-firing" "当前无 active 告警"
+            ops_ok "mon.alerts-firing" "当前无非 info 的 active 告警"
+        fi
+        # info 是事实记录，不是故障：单独记一行，不参与阈值。
+        if (( firing_info > 0 )); then
+            local info_names
+            info_names="$(printf '%s' "$alerts_json" | jq -r \
+                '[.[] | select(.status.state == "active") | select((.labels.severity // "") == "info")
+                  | (.labels.alertname // "?")] | join(", ")' 2>/dev/null)"
+            ops_info "mon.alerts-info" "${firing_info} 条 info 级事实记录处于 active（不计入阈值）: ${info_names}"
         fi
     fi
 
