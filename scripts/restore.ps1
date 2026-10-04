@@ -33,7 +33,7 @@ try {
   $appStopped = $true
 
   docker compose exec -T postgres pg_restore `
-    --username=knowtrace `
+    --username=knowtrace_workflow `
     --dbname=postgres `
     --clean `
     --if-exists `

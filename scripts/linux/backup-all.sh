@@ -132,8 +132,8 @@ trap on_exit EXIT
 
 postgres_counts() {
   "${compose[@]}" exec -T postgres psql \
-    --username=knowtrace \
-    --dbname=knowtrace \
+    --username=knowtrace_workflow \
+    --dbname=knowtrace_workflow \
     --no-psqlrc \
     --tuples-only \
     --no-align \

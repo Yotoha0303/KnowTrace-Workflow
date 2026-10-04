@@ -18,7 +18,7 @@ services:
     volumes:
       - source_postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U knowtrace -d knowtrace_source"]
+      test: ["CMD-SHELL", "pg_isready -U knowtrace_workflow -d knowtrace_source"]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -34,7 +34,7 @@ services:
     volumes:
       - target_postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U knowtrace -d knowtrace_target"]
+      test: ["CMD-SHELL", "pg_isready -U knowtrace_workflow -d knowtrace_target"]
       interval: 2s
       timeout: 2s
       retries: 30
