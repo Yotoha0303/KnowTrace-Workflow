@@ -242,8 +242,16 @@ if ops_have_cmd journalctl && [[ "$is_root" == "1" ]]; then
             | sort | uniq -c | sort -rn | head -n 10 || printf '')"
     fi
 
-    if (( failed_count >= THRESH_FAILED_LOGIN_FAIL )); then
-        ops_fail "ssh.failed-logins" "${FAILED_LOGIN_WINDOW_HOURS} 小时内 ${failed_count} 次失败登录，疑似暴力破解"
+    # 密码登录已关闭时，失败登录永远无法成功，属公开 IP 的背景噪音，最多 WARN 不 FAIL；
+    # 只有密码登录开启时，失败登录才是真实威胁，达到 FAIL 阈值才报 FAIL。
+    if [[ "${passwordauth:-}" == "no" ]]; then
+        if (( failed_count >= THRESH_FAILED_LOGIN_WARN )); then
+            ops_warn "ssh.failed-logins" "${FAILED_LOGIN_WINDOW_HOURS} 小时内 ${failed_count} 次失败登录（密码登录已关闭，无法成功，属背景噪音）"
+        else
+            ops_ok "ssh.failed-logins" "${FAILED_LOGIN_WINDOW_HOURS} 小时内失败登录 ${failed_count} 次"
+        fi
+    elif (( failed_count >= THRESH_FAILED_LOGIN_FAIL )); then
+        ops_fail "ssh.failed-logins" "${FAILED_LOGIN_WINDOW_HOURS} 小时内 ${failed_count} 次失败登录，疑似暴力破解（密码登录开启，有真实风险）"
     elif (( failed_count >= THRESH_FAILED_LOGIN_WARN )); then
         ops_warn "ssh.failed-logins" "${FAILED_LOGIN_WINDOW_HOURS} 小时内 ${failed_count} 次失败登录，需要关注"
     else
