@@ -24,10 +24,19 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `pnpm dev --port ${port}`,
+    // 2026-10-04 改为跑**生产构建**而不是 dev。
+    // 两个理由：
+    //   1. 生产跑的就是 `next start`，E2E 该验同一形态；dev 与 prod 的行为差异
+    //      （热更新、开发态覆盖层、React 开发态告警）会让门禁测的不是要发布的东西。
+    //   2. 实测：dev 会在输入框上注入 `style={{caret-color:"transparent"}}`（源码里
+    //      grep `caret` 为空，属 Next 开发态行为），它使 `/claims` 页产生
+    //      hydration mismatch，被 claim-workflow 的 consoleErrors 断言逮到而报红。
+    //      那是**开发态产物**，生产构建里不存在。
+    command: `pnpm build && pnpm start --port ${port}`,
     url: `${baseURL}/api/health`,
     reuseExistingServer: true,
-    timeout: 120_000,
+    // 首次要跑一次 next build，给足时间。
+    timeout: 300_000,
   },
   projects: [
     {
