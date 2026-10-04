@@ -110,6 +110,7 @@ const DEFAULT_SESSION_CREDENTIALS: SessionCredentials = {
   openAIConnectionMode: "ccswitch_auto",
   openAIKey: "",
   openAIModel: "",
+  // 默认别名，非模型选择：CC-Switch Codex OAuth 路由要求 claude- 前缀，出站由 CC-Switch 转发。
   ccSwitchCodexModel: "claude-sonnet-4-5",
   ccSwitchBaseURL: DEFAULT_CC_SWITCH_BASE_URL,
   ccSwitchToken: "",

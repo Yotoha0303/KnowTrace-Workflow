@@ -46,6 +46,10 @@ The project also serves as an engineering research environment for AI applicatio
 - Zod
 - OpenAI / DeepSeek provider adapters
 
+> AI note: the runtime provider is DeepSeek (and OpenAI-compatible endpoints). The
+> `claude-*` strings in the code are inbound protocol aliases required by CC-Switch
+> routing — they do **not** mean this project uses Claude models. See `AGENTS.md`.
+
 ### Authentication
 
 - Go / Gin / GORM

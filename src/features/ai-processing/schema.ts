@@ -74,6 +74,9 @@ export const aiConnectionSchema = z.discriminatedUnion("mode", [
     apiKey: z.string().trim().max(1_000).optional(),
     model: aiModelSchema.optional(),
   }),
+  // CC-Switch 的 Codex OAuth 路由：入站说 Anthropic Messages 协议，所以模型名必须是
+  // claude- 开头的**别名**；出站由 CC-Switch 转发（通常是 Codex / ChatGPT）。
+  // 这个前缀不代表本项目使用 Claude 模型——见 AGENTS.md。
   z.object({
     mode: z.literal("ccswitch_codex_oauth"),
     baseURL: z.string().trim().min(1).max(500),

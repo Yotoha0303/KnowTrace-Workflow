@@ -1,5 +1,8 @@
 import "server-only";
 
+// createAnthropic 是 CC-Switch 路由的**入站协议**（Anthropic Messages），不是
+// 「本项目使用 Claude」的证据：出站目标由 CC-Switch 转发决定，模型名以 claude-
+// 开头也只是协议别名要求。详见 features/ai-processing/schema.ts 与 AGENTS.md。
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -244,6 +247,8 @@ function providerConfig(
         : usesOpenAIProxy
           ? ("openai-ccswitch" as const)
           : selected,
+      // "claude-sonnet-4-5" 是满足 schema 前缀要求的默认**别名**，不是模型选择：
+      // 该路由入站说 Anthropic Messages，出站由 CC-Switch 转发。
       model: usesCodexOAuthProxy || usesCurrentProviderProxy
         ? connection.model || "claude-sonnet-4-5"
         : connection?.model || process.env.OPENAI_MODEL || "gpt-5.6-luna",

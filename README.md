@@ -78,6 +78,9 @@ Runbook / Postmortem
 - Zod
 - OpenAI / DeepSeek Provider Adapter
 
+> AI 相关：运行时 provider 是 DeepSeek（及 OpenAI 兼容端点）。代码里的 `claude-*`
+> 是 CC-Switch 路由的**入站协议别名**，不代表使用 Claude 模型。见 `AGENTS.md`。
+
 ### 认证
 
 - Go / Gin / GORM
