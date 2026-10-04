@@ -35,6 +35,8 @@
 #   bootstrap.sh --all [--yes]
 #
 # 阶段
+#   ansible     Day 0 宿主机加固（系统包/sshd/sysctl/UFW/fail2ban，幂等）。
+#               需 ansible-core 与 /root/knowtrace-ops/knowtrace_vps_ed25519.pub 就位，否则跳过
 #   host        宿主机准备：建 external 数据卷 + 放 Nginx 站点配置 + 移除 default 站点
 #               （幂等，可重复跑；全新机器上必须先跑它，否则 apps 连构建都开始不了）
 #   apps        拉代码 + 生成 .env + 起应用栈（会构建镜像，耗时最长）
@@ -90,11 +92,11 @@ while (( $# )); do
     --stage)
       [[ -n "${2:-}" ]] || { echo "错误：--stage 需要一个值" >&2; exit "$BOOTSTRAP_USAGE"; }
       case "$2" in
-        host|apps|monitoring|ops|verify) BOOTSTRAP_STAGES+=("$2") ;;
-        *) echo "错误：未知阶段 $2（可选 host|apps|monitoring|ops|verify）" >&2; exit "$BOOTSTRAP_USAGE" ;;
+        ansible|host|apps|monitoring|ops|verify) BOOTSTRAP_STAGES+=("$2") ;;
+        *) echo "错误：未知阶段 $2（可选 ansible|host|apps|monitoring|ops|verify）" >&2; exit "$BOOTSTRAP_USAGE" ;;
       esac
       shift 2 ;;
-    --all)     BOOTSTRAP_STAGES=(host apps monitoring ops verify); shift ;;
+    --all)     BOOTSTRAP_STAGES=(ansible host apps monitoring ops verify); shift ;;
     --dir)     BOOTSTRAP_DIR="$(cd -- "$2" && pwd -P)"; shift 2 ;;
     --record)  BOOTSTRAP_RECORD_FILE="$2"; shift 2 ;;
     --yes)     BOOTSTRAP_ASSUME_YES=true; shift ;;
@@ -130,6 +132,38 @@ compose=(
 )
 
 b_record "=== bootstrap 开始 $(date -u '+%Y-%m-%dT%H:%M:%SZ') dir=$BOOTSTRAP_DIR stages=${BOOTSTRAP_STAGES[*]} ==="
+
+# ---------------------------------------------------------------------------
+b_stage_ansible() {
+  b_step "阶段：ansible —— Day 0 宿主机加固（幂等）"
+
+  local ansible_dir="$BOOTSTRAP_DIR/deploy/ansible"
+  local playbook="$ansible_dir/site.yml"
+  local pubkey_file="/root/knowtrace-ops/knowtrace_vps_ed25519.pub"
+
+  # 缺料就跳过、不硬跑：sshd/UFW 有自锁风险，跑一半比不跑更危险
+  if [[ ! -f "$playbook" ]]; then
+    b_fail "缺少 $playbook"
+    return "$BOOTSTRAP_FAIL"
+  fi
+  if ! command -v ansible-playbook >/dev/null 2>&1; then
+    b_warn "跳过：未安装 ansible-core（apt-get install ansible-core && ansible-galaxy collection install -r deploy/ansible/requirements.yml）"
+    return 0
+  fi
+  if [[ ! -f "$pubkey_file" ]]; then
+    b_warn "跳过：缺少控制端公钥 $pubkey_file（access role 会断言它；先 scp 公钥再跑）"
+    return 0
+  fi
+
+  if [[ "$BOOTSTRAP_DRY_RUN" == true ]]; then
+    b_info "(dry-run) ansible-playbook site.yml --check"
+    return 0
+  fi
+
+  (cd "$ansible_dir" && ansible-playbook site.yml)
+  b_record "RUN: ansible-playbook site.yml"
+  b_ok "Day 0 加固完成（幂等，二次运行 changed=0）"
+}
 
 # ---------------------------------------------------------------------------
 b_stage_host() {
@@ -474,7 +508,7 @@ b_info "阶段：${BOOTSTRAP_STAGES[*]}"
 if [[ -n "$BOOTSTRAP_RECORD_FILE" ]]; then
   b_info "步骤记录：$BOOTSTRAP_RECORD_FILE"
 fi
-b_info "未自动化的部分（需人工）：系统包安装、sshd 加固、UFW、反向代理与证书、DNS。"
+b_info "未自动化的部分（需人工）：反向代理与证书、DNS（ansible 阶段若因缺 ansible-core/公钥被跳过，系统包/sshd/UFW 也需人工）。"
 b_report_remaining_manual
 b_info "指引见 docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/04-从零部署到当前线上状态-完整实操教程.md"
 b_record "=== bootstrap 结束 $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
