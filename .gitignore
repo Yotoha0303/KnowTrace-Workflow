@@ -25,6 +25,13 @@ runtime/
 # 运维工具包（scripts/ops）的运行配置：含内网地址、端口与账号名，不能入库
 ops.conf
 
+# 凭据与密钥（异地备份 age 私钥 / Google OAuth client_secret / 服务账号密钥）—— 绝不入库
+异地备份.txt
+offsite-key.txt
+offsite-identity.txt
+client_secret_*.json
+*service-account*.json
+
 # 运维脚本的报告产物。权威位置是 /var/lib/knowtrace/reports（systemd 单元用
 # --json 显式指定）；但在仓库检出里**交互式**跑脚本时，ops-common.sh 会回落到
 # 工具包内的 reports/ —— 那会弄脏工作区，而"工作区干净"是部署验收的一项
