@@ -177,8 +177,8 @@ fi
 
 log "导出 PostgreSQL"
 "${compose[@]}" exec -T postgres pg_dump \
-  --username=knowtrace \
-  --dbname=knowtrace \
+  --username=knowtrace_workflow \
+  --dbname=knowtrace_workflow \
   --format=custom \
   --no-owner \
   --no-privileges >"$incomplete_dir/postgres.dump"
