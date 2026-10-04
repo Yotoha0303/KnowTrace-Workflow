@@ -77,3 +77,4 @@ baseline_packages:
   - openssl
   - python3
   - unattended-upgrades
+  - lynis
