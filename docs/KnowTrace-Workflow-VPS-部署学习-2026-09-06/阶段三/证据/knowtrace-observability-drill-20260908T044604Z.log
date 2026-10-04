@@ -1,0 +1,50 @@
+SCENARIO=blackbox-exporter-stop
+STARTED_AT_UTC=2026-09-08T04:46:04Z
+PASS KnowTrace liveness: HTTP 200
+PASS KnowTrace readiness: HTTP 200
+PASS Auth readiness: HTTP 200
+PASS Prometheus: HTTP 200
+PASS Alertmanager: HTTP 200
+PASS Grafana: HTTP 200
+PASS KnowTrace protected metrics endpoint
+PASS Nginx blocks public metrics path with 404
+PASS Prometheus targets: total=12 up=12
+PASS PromQL: knowtrace_build_info
+PASS PromQL: knowtrace_database_ready == 1
+PASS PromQL: go_user_system_readiness == 1
+PASS PromQL: knowtrace_backup_archive_count >= 1
+PASS PromQL: probe_success{job="knowtrace-http-public"} == 1
+PASS Prometheus to Alertmanager discovery: active=1
+PASS Grafana provisioned dashboard: knowtrace-vps-overview
+PASS Grafana provisioned Prometheus datasource
+RESULT all requested observability checks passed
+ACTION=stop blackbox-exporter
+ Container knowtrace-blackbox-exporter-1  Stopping
+ Container knowtrace-blackbox-exporter-1  Stopped
+PASS Prometheus alert firing: KnowTraceMetricsTargetDown job=blackbox-exporter
+PASS Alertmanager received KnowTraceMetricsTargetDown
+ACTION=start blackbox-exporter
+ Container knowtrace-blackbox-exporter-1  Starting
+ Container knowtrace-blackbox-exporter-1  Started
+PASS KnowTrace liveness: HTTP 200
+PASS KnowTrace readiness: HTTP 200
+PASS Auth readiness: HTTP 200
+PASS Prometheus: HTTP 200
+PASS Alertmanager: HTTP 200
+PASS Grafana: HTTP 200
+PASS KnowTrace protected metrics endpoint
+PASS Nginx blocks public metrics path with 404
+PASS Prometheus targets: total=12 up=12
+PASS PromQL: knowtrace_build_info
+PASS PromQL: knowtrace_database_ready == 1
+PASS PromQL: go_user_system_readiness == 1
+PASS PromQL: knowtrace_backup_archive_count >= 1
+PASS PromQL: probe_success{job="knowtrace-http-public"} == 1
+PASS Prometheus to Alertmanager discovery: active=1
+PASS Grafana provisioned dashboard: knowtrace-vps-overview
+PASS Grafana provisioned Prometheus datasource
+RESULT all requested observability checks passed
+PASS Prometheus alert recovered and cleared
+RESULT=PASS
+FINISHED_AT_UTC=2026-09-08T04:48:08Z
+LOG_PATH=/var/log/knowtrace-observability-drill-20260908T044604Z.log

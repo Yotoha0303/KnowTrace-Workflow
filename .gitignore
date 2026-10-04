@@ -12,6 +12,10 @@ backups/
 !.env.example
 !.env.observability.example
 *.log
+# 例外：证据目录下的受控演练日志属证据本体（如 observability-drill 脚本的
+# LOG_PATH 产物，被同级 证据/README.md 逐条列出），需要入库；其余位置的 *.log
+# 仍按产物处理，不入库。
+!docs/**/证据/*.log
 *.tsbuildinfo
 __pycache__/
 *.py[cod]
