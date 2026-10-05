@@ -4,13 +4,23 @@
 # 为什么做得这么轻：实测该机已有 /etc/fail2ban/jail.d/defaults-debian.conf，
 # 里面已经是 `[sshd] enabled = true` —— 它就是官方推荐写法。
 # 我们再写一份 jail 反而是"两套并存"（这与引入 Ansible 的初衷相悖）。
-# 这里只做两件事：① 断言 jail 活着 ② 把 sshd 日志来源钉死为 systemd。
+# 这里只做三件事：① 断言 jail 活着 ② 钉死 sshd 日志来源为 systemd
+#                 ③ 钉死 jail 的 port（见下，**这条不是可选项**）。
 #
-# ⚠️ 已知缺口（**本次不修，留作后续**）：
-#   该 jail 没有配 `port`。fail2ban 的 sshd filter 是按日志里的
-#   "Failed password" 抓的，与 sshd 实际端口无关，所以功能上不受影响；
-#   但 `fail2ban-client` 的端口信息会失真。要修得连同 jail.local 一起设计，
-#   不在本次授权范围内。
+# ⚠ **2026-10-05 更正一条此前的错误判断**：
+#   本文件原先写「该 jail 没有配 port……fail2ban 的 sshd filter 是按日志里的
+#   'Failed password' 抓的，与端口无关，所以**功能上不受影响**」。
+#   **那个结论是错的，而且错得危险。** 实测：
+#     `fail2ban-client set sshd banip 192.0.2.1` 之后，nftables 里生成的规则是
+#         chain f2b-chain { tcp dport 22 ip saddr @addr-set-sshd reject }
+#     —— nftables 的 action 会把 jail 的 `port` **写进规则本身**。
+#     不配 port 时取默认 22，而本机 sshd 在 {{ ssh_port }}，
+#     于是这条规则匹配的是一个**没有监听者的端口**：整条链一条都不拦，
+#     而 jail 显示 active、`Total banned` 会 +1、`set addr-set-sshd` 里有元素、
+#     日志**无任何报错**。
+#   → 判断「与端口无关」时只看了 filter 一侧，没看 action 一侧。
+#     这是「只看输出像不像对的」的又一次翻版 —— 判据要读**生成出来的东西**
+#     （nft 规则原文），不能读「jail 状态是否正常」。
 
 - name: 确保 fail2ban 已安装
   ansible.builtin.apt:
@@ -18,7 +28,7 @@
     state: present
     lock_timeout: 900
 
-- name: 钉死 sshd 日志来源为 systemd
+- name: 钉死 sshd 日志来源为 systemd、并钉死 jail 的 port
   # 实测该机默认 backend = systemd（在 defaults-debian.conf 里）。
   # 这里**显式声明**，免得将来发行版换默认值时静默失效 ——
   # 该机 /var/log/auth.log 在 Ubuntu 24.04 上并不保证存在，靠 auto 探测很脆。
@@ -27,15 +37,24 @@
     content: |
       # 由 deploy/ansible/roles/fail2ban 管理。
       # [sshd] enabled 仍由 defaults-debian.conf 提供；文件名 00- 让它在前面被读。
-      # 两条都必须钉死，否则「看起来在拦、实际没生效」：
+      # 三条都必须钉死，否则会「看起来在拦、实际没生效」：
       #   backend=systemd —— 免得发行版换默认值时静默失效；
       #   journalmatch    —— backend=systemd 时 fail2ban 默认按 jail 名拼成
       #                     _SYSTEMD_UNIT=sshd.service，但这台机 sshd 实际跑在
       #                     ssh.service（sshd.service 只是 alias），默认值匹配 0 条、
       #                     永远不 ban。2026-10-04 实测 Total banned 一直是 0。
+      #   port            —— **2026-10-05 补**。这不是「只是让 fail2ban-client 的
+      #                     端口信息好看一点」：nftables 的 action 会把 port 写进
+      #                     封禁规则本身（`tcp dport <port> ip saddr @addr-set reject`）。
+      #                     不配 port 时它取 22，而本机 sshd 在 {{ ssh_port }} ——
+      #                     于是**封禁规则匹配的是一个没有监听者的端口，整条链一条都不拦**，
+      #                     却全程无报错、jail 显示 active、set 里有元素。
+      #                     判别方式见文末「怎么验封禁真的生效」。
+      # ⚠ 三者要和 group_vars/all.yml 的 ssh_port 保持一致（这里用变量注入，别手改数字）。
       [sshd]
       backend = systemd
       journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+      port = {{ ssh_port }}
     owner: root
     group: root
     mode: "0644"
@@ -66,3 +85,41 @@
 - name: 记录 jail 状态
   ansible.builtin.debug:
     msg: "{{ fail2ban_status.stdout_lines[0:2] }}"
+
+# ---------------------------------------------------------------------------
+# 断言：封禁规则必须匹配 **sshd 实际在听的端口**
+# ---------------------------------------------------------------------------
+# 为什么需要它（2026-10-05 实测踩到）：
+#   nftables 的 action 把 jail 的 `port` 写进封禁规则本身：
+#       tcp dport <port> ip saddr @addr-set-sshd reject
+#   若 jail 没配 port（默认解析为 `ssh` → 22）而 sshd 在 22345，规则就落在
+#   **没有监听者的端口**上 —— 整条链看起来完全正常：jail active、`Total banned`
+#   会 +1、`nft` 里能看到 set 有元素、**没有任何报错**，但**一条流量都拦不到**。
+#   这比「jail 没启动」难发现得多，所以必须由断言兜住，而不是靠人记得去查。
+#
+# ⚠ 断言读的是 **fail2ban 自己解析后的配置**（`fail2ban-client -d`），不是源文件 ——
+#   源文件写 `port = 22345` 与「action 真的拿 22345 去拼规则」是两件事，
+#   中间还会经过 `/etc/services` 名称解析（默认值 `ssh` 就是这么变成 22 的）。
+#   实测输出形如：`['port', '22345']`。
+- name: 读取 jail 实际生效的 port
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      fail2ban-client -d 2>/dev/null | grep -oE "\['port', '[^']*'\]" | head -1
+    chdir: /
+  register: fail2ban_jail_port
+  changed_when: false
+  check_mode: false
+
+- name: 断言封禁规则命中 ssh_port
+  ansible.builtin.assert:
+    that:
+      - (fail2ban_jail_port.stdout | default('')) | length > 0
+      - (ssh_port | string) in fail2ban_jail_port.stdout
+    fail_msg: >-
+      jail 实际生效的 port 里看不到 ssh_port={{ ssh_port }}
+      （读到：{{ fail2ban_jail_port.stdout | default('(空)') }}）。
+      这会让 nftables 的封禁规则写成 `tcp dport <别的东西>`，
+      **整条链不拦任何流量**，而 jail 状态、`Total banned`、日志全都不报错。
+      先核对 /etc/fail2ban/jail.d/00-knowtrace-sshd.conf 的 `port`，再 `fail2ban-client reload`。
+    success_msg: "封禁规则端口 = ssh_port={{ ssh_port }}（落在 sshd 真正监听的端口上）"
