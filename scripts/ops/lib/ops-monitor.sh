@@ -105,6 +105,30 @@ ops_monitor_check() {
         fi
     fi
 
+    # ---- node-exporter textfile 收集器自检 ----
+    #
+    # textfile 收集器在**同一个指标名被两个文件重复定义**时会整体报错
+    # （`node_textfile_scrape_error=1`），而且**先被解析的那个文件赢** ——
+    # 于是 Prometheus 拿到的是其中一个文件的值，但没人知道是哪个、也没人知道另一个被丢了。
+    #
+    # 2026-10-04 就栽在这：改名残留的孤儿 `knowtrace-backup.prom`（无写入者、值冻结）
+    # 遮蔽了在用的 `knowtrace-workflow-backup.prom`，后果是同一个判据**两个方向同时失效**：
+    # `KnowTraceBackupStale` 恒 firing（假警报），而「备份全丢」的
+    # `KnowTraceBackupMissing`（critical）**永远不会触发**。
+    #
+    # 判据必须读这个标志。只看告警输出**永远发现不了** —— 告警本身看起来只是「有点吵」。
+    # 这条同时是 KT-GAP-28 的代码层根因：没有它，下次改名会原样复发。
+    local tf_json tf_err
+    tf_json="$(ops_monitor_url "$prometheus_base/api/v1/query?query=node_textfile_scrape_error")"
+    tf_err="$(printf '%s' "${tf_json:-}" | jq -r '.data.result[0].value[1] // empty' 2>/dev/null)"
+    if [[ -z "$tf_err" ]]; then
+        ops_info "mon.textfile" "没有 node_textfile_scrape_error 样本（node-exporter 未启用 textfile 收集器？）"
+    elif [[ "$tf_err" != "0" ]]; then
+        ops_fail "mon.textfile" "textfile 收集器报错（scrape_error=${tf_err}）：有文件重复定义同名指标，指标真值可能被遮蔽。查：ls -la /opt/knowtrace/runtime/node-exporter/ 与 node-exporter 日志里的 'inconsistent metric'"
+    else
+        ops_ok "mon.textfile" "textfile 收集器无报错"
+    fi
+
     # ---- Alertmanager: 告警与链路新鲜度 ----
     #
     # /api/v2/alerts 返回的**不只是**正在响的告警。status.state 只有三态
@@ -191,6 +215,112 @@ ops_monitor_check() {
         else
             ops_info "mon.prometheus-latency" "Prometheus API p95 延迟 ${p95_ms}ms"
         fi
+    fi
+
+    return 0
+}
+
+# ============================================================================
+# 主机 systemd 单元检查
+# ============================================================================
+#
+# 与 ops_monitor_check 分开：那条查的是监控栈（Prometheus / Alertmanager），
+# 这条查的是**宿主机自己的单元状态**。放这里而不是 daily-check.sh，是因为
+# **daily-check.sh 没有任何定时器在跑**（2026-10-05 实测：只有 daily-ops /
+# weekly-check / monthly-ops 三个 timer），而后两者都 source 本文件 ——
+# 判据落在没人按计划跑的地方，等于没有判据。
+#
+# 用法：
+#   source "$SCRIPT_DIR/../lib/ops-monitor.sh"
+#   ops_systemd_check
+ops_systemd_check() {
+    if ! ops_have_cmd systemctl; then
+        ops_info "systemd.services" "systemctl 不可用，跳过"
+        return 0
+    fi
+
+    # ---- 关键服务（白名单）----
+    local unit state enabled
+    for unit in $(ops_conf_list SYSTEMD_UNITS "docker nginx caddy ssh"); do
+        state="$(systemctl is-active "$unit" 2>/dev/null || printf 'unknown')"
+        enabled="$(systemctl is-enabled "$unit" 2>/dev/null || printf 'unknown')"
+        if [[ "$state" == "active" ]]; then
+            ops_ok "systemd.$unit" "active / $enabled"
+        elif [[ "$state" == "unknown" ]]; then
+            ops_info "systemd.$unit" "未找到该 unit（可能未安装）"
+        else
+            ops_fail "systemd.$unit" "$state / $enabled"
+        fi
+    done
+
+    # ---- 备份定时器 ----
+    #
+    # 2026-10-05 更正：这里原先是 `ops_info "未安装该定时器（若用 cron 备份可忽略）"`，
+    # 而服务器 `ops.conf` 的 `BACKUP_TIMER_UNIT` 当时还是改名前的旧值
+    # `knowtrace-backup.timer` —— 于是这条判据**永远走这个分支、永远只记 INFO、
+    # 从不检查任何东西**。判据空转比判据误报更坏：它让人以为「备份定时器活着」
+    # 已经被检查过了。改成 WARN —— 名字对不上多半就是改名残留，得有人看一眼。
+    local backup_timer next_run
+    backup_timer="$(ops_conf_get BACKUP_TIMER_UNIT knowtrace-workflow-backup.timer)"
+    if systemctl list-unit-files "$backup_timer" 2>/dev/null | grep -qF "$backup_timer"; then
+        state="$(systemctl is-active "$backup_timer" 2>/dev/null || printf 'unknown')"
+        next_run="$(systemctl list-timers "$backup_timer" --all --no-pager 2>/dev/null | awk 'NR==2 {print $1" "$2" "$3}')"
+        if [[ "$state" == "active" ]]; then
+            ops_ok "systemd.$backup_timer" "active，下次执行: ${next_run:-unknown}"
+        else
+            ops_fail "systemd.$backup_timer" "$state，自动备份可能没有在运行"
+        fi
+    else
+        ops_warn "systemd.$backup_timer" "找不到该定时器（$backup_timer）：备份可能没有排班。若改用 cron 备份请同步修正此项配置"
+    fi
+
+    # ---- 失败单元（含显式白名单）----
+    #
+    # 为什么需要：`systemctl --failed` 长期挂红会训练人忽略它（狼来了），
+    # 所以上面只检查**白名单里的** SYSTEMD_UNITS —— 但那意味着
+    # **不在名单里的单元哪怕 failed 也永远不进日报**。
+    # 2026-10-05 实测：`repass` / `setupfirst` 长期 failed 而巡检完全看不见
+    # （`grep -rn 'systemctl --failed' scripts/` 零命中）。
+    #
+    # 处置**不是**「清空 failed 列表」：
+    #   * 真该清的（`setupfirst`，INC-S2-002 判定的无效残留）→ 清掉；
+    #   * 刻意保留的（`repass`，INC-S2-003 判为云厂商控制台救援链路 ——
+    #     *「禁用、删除或改写它可能让未来的控制台恢复能力失效」*）
+    #     → **列入白名单并写明理由**，不要为了列表好看去 mask 它。
+    #
+    # 白名单用 SYSTEMD_FAILED_ALLOWLIST（空格分隔）。**缺省为空** ——
+    # 没配置就任何 failed 都算问题。
+    local failed_units allow_list unexpected allowed unit_name ok_unit
+    failed_units="$(systemctl --failed --no-legend --plain --no-pager 2>/dev/null \
+        | awk '{print $1}' | grep -E '\.(service|timer|socket)$' || true)"
+    allow_list="$(ops_conf_list SYSTEMD_FAILED_ALLOWLIST "")"
+
+    if [[ -z "$failed_units" ]]; then
+        ops_ok "systemd.failed-units" "没有处于 failed 状态的单元"
+        return 0
+    fi
+
+    unexpected=""
+    while IFS= read -r unit_name; do
+        [[ -n "$unit_name" ]] || continue
+        allowed=0
+        for ok_unit in $allow_list; do
+            [[ "$unit_name" == "$ok_unit" ]] && { allowed=1; break; }
+        done
+        (( allowed == 1 )) || unexpected="${unexpected}${unit_name} "
+    done <<<"$failed_units"
+
+    if [[ -n "${unexpected// /}" ]]; then
+        ops_fail "systemd.failed-units" "有不在白名单里的 failed 单元：$(printf '%s' "$unexpected" | tr -s ' ')"
+        if [[ "$OPS_QUIET" != "1" ]]; then
+            printf '       --- 全部 failed 单元 ---\n'
+            printf '%s\n' "$failed_units" | ops_indent
+            printf '       --- 白名单（SYSTEMD_FAILED_ALLOWLIST）---\n'
+            printf '       %s\n' "${allow_list:-（空：任何 failed 都算问题）}"
+            printf '       处置：该清的清掉；刻意保留的写进 SYSTEMD_FAILED_ALLOWLIST 并注明理由\n' | ops_indent
+        fi
+    else
+        ops_info "systemd.failed-units" "$(printf '%s' "$failed_units" | wc -w) 个 failed 单元全在白名单内（$(printf '%s' "$failed_units" | tr -s ' \n' ' ' | sed 's/ *$//')）"
     fi
 
     return 0

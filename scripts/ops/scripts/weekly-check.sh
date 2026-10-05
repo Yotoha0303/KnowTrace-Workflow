@@ -288,6 +288,10 @@ fi
 ops_section "2. 监控系统（Prometheus / Alertmanager）"
 
 ops_monitor_check "$PROMETHEUS_BASE" "$ALERTMANAGER_BASE"
+
+# 主机 systemd 单元（关键服务 / 备份定时器 / failed 单元）。
+# 与 daily-ops 共用同一个函数 —— 判据只有一处实现，避免两份漂移。
+ops_systemd_check
 # ----------------------------------------------------------------------------
 # 3. 日志错误模式（委派 log_analyzer.py）
 # ----------------------------------------------------------------------------

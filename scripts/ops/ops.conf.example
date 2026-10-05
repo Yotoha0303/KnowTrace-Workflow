@@ -75,6 +75,22 @@ CADDY_ACCESS_LOG=/var/log/caddy/knowtrace-access.log
 SYSTEMD_UNITS=docker nginx caddy ssh
 BACKUP_TIMER_UNIT=knowtrace-workflow-backup.timer
 
+# 已知为 failed、但**刻意保留**的单元（空格分隔，含 .service 后缀）。
+# 巡检的 `systemd.failed-units` 只对**不在此列表里**的 failed 单元报 FAIL。
+#
+# 两个原则：
+#   1. **缺省为空** —— 任何 failed 都算问题。别为了让列表好看而往里加。
+#   2. 每一项都要能说清「为什么保留」。本项目当前的两个：
+#      * repass.service    —— INC-S2-003 判为云厂商控制台「重置密码」辅助链路。
+#        那份复盘明确写着：「禁用、删除或改写它可能让未来的控制台恢复能力失效……
+#        不把『让 failed 列表变空』置于恢复能力之上」。→ **保留并列入白名单**。
+#      * setupfirst.service —— INC-S2-002 判为无效残留，**本应清掉**；
+#        它「关过一次又回来了」。处置是清掉它，不是加进白名单。
+#
+# 2026-10-05 实测：这两个单元长期 failed，而此前的巡检**对 failed 单元完全没有判据**
+# （`grep -rn 'systemctl --failed' scripts/` 零命中），所以一直没人发现。
+SYSTEMD_FAILED_ALLOWLIST=repass.service
+
 # 核心服务：缺失 = FAIL
 EXPECTED_SERVICES=app auth postgres auth-mysql auth-redis
 # 监控组件：缺失 = WARN（按需策略允许临时停）
