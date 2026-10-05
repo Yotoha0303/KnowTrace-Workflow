@@ -163,7 +163,9 @@ jobs:
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 40 分钟：本 job 现在跑**两次**端到端（无认证 + 有认证），
+    # 每次都要 `next build`，另外还多了一个 Go build 与认证服务启动。
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -180,12 +182,44 @@ jobs:
           --health-timeout 3s
           --health-retries 20
 
+      # 2026-10-05（KT-GAP-41）：本 job 原先只有 postgres，日志服务**不在门里**，
+      # 于是 tests/e2e 里那 8 个需要真实账号的 spec 全部 test.skip()。
+      # 后果比 KT-GAP-33 修掉的那个 lint 假门更宽 ——
+      # 「CI 全 success」当时并不等于「登录链路在门内验过」。
+      #
+      # 为什么是 mysql 而不是把 compose 整栈拉起来：本 job 只需要
+      # 「一个能登录的账号」。认证服务是一个 Go 二进制（可以在 step 里直接起），
+      # 不必为此引入 docker compose 的重栈。
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: knowtrace-root
+          MYSQL_DATABASE: go_user_system
+          MYSQL_USER: go_user_system
+          MYSQL_PASSWORD: knowtrace
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
     env:
-      # 与 quality job 同一套空库。Playwright 的 webServer 会起 `pnpm dev`。
+      # 与 quality job 同一套空库。Playwright 的 webServer 会起生产构建。
       DATABASE_URL: postgres://knowtrace:knowtrace@localhost:5432/knowtrace
       AI_DEFAULT_PROVIDER: mock
-      # 不配 AUTH_E2E_* / 管理员凭据：那 10 个需要真实账号的 spec 会自行 test.skip()。
-      # 这是刻意的——见下方「为什么允许部分 skip」。
+
+      # ---- 种子账号 ----------------------------------------------------------
+      # **刻意不放在 job 级 `AUTH_E2E_*` 上** —— 那两个变量是 spec 眼里
+      # 「有没有凭据」的开关。一旦 job 级设置，下面那次「无认证」运行也会去登录而失败。
+      # 它们只出现在「Run the authenticated end-to-end tests」那一步的 env 里。
+      #
+      # 为什么账号名/口令**必须配对同一组值**：`AUTH_E2E_*` 是给 spec 登录用的，
+      # 而账号是 `bootstrap-admin-if-needed` 建的。两处各写一份值就会
+      # 「看起来配了、实际登不上」。
+      KNOWTRACE_ADMIN_USERNAME: CiAdmin
+      KNOWTRACE_ADMIN_PASSWORD: CiAdmin@Passw0rd-2026
 
     steps:
       - name: Check out repository
@@ -207,11 +241,153 @@ jobs:
       - name: Apply migrations to an empty database
         run: pnpm db:migrate
 
+      # 认证服务的迁移 + 管理员种子。两步都在 Go 二进制里（`migrate up` /
+      # `bootstrap-admin-if-needed`），所以不需要把 compose 拉起来。
+      - name: Migrate the authentication database
+        working-directory: services/go-user-system
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+        run: go run ./cmd migrate up
+
+      - name: Seed the end-to-end administrator
+        working-directory: services/go-user-system
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+        # job 级 env 会被所有 step 继承，所以这里直接读 KNOWTRACE_ADMIN_*，
+        # 只在 shell 层改名为认证服务要的 BOOTSTRAP_ADMIN_*。
+        # 这样**凭据只有一处定义**，不会出现「配了却没配上」。
+        run: |
+          BOOTSTRAP_ADMIN_USERNAME="$KNOWTRACE_ADMIN_USERNAME"           BOOTSTRAP_ADMIN_PASSWORD="$KNOWTRACE_ADMIN_PASSWORD"             go run ./cmd bootstrap-admin-if-needed
+
+      # 放宽**本 job** 的账号级登录限流。
+      #
+      # 为什么必须做：认证服务的 `config.yml` 是 `accountLimit: 5 / 15m`，
+      # 而它**只从工作目录的 `config.yml` 读**（`cmd/main.go` 里 `loadConfig("config.yml")`），
+      # **没有环境变量覆盖**。
+      #
+      # 而本 job 一旦让 spec 真的登录，次数就已超过 5：
+      #   auth-flow / account-center / mobile-api / ai-runs-api 各 1 次 = 4，
+      #   再加 knowledge-flow 与 sidebar-layout 的**条件登录**
+      #   （`page.goto("/")` 后若落在 /login 就登录）= 6 次。
+      # 也就是说，只把 AUTH_ENABLED=true 打开**必然**撞限流而全红 ——
+      # 那不是「测出了问题」，是**门本身配错了**。
+      #
+      # 改的是**运行目录下的一份副本**，源文件不动（它服务于生产语义）。
+      # 两个键在该文件里各只出现一次，所以直接按整行替换，不用正则。
+      - name: Raise the login rate limit for this CI run
+        working-directory: services/go-user-system
+        run: |
+          sed -i 's/^    accountLimit: 5$/    accountLimit: 500/; s/^    ipLimit: 20$/    ipLimit: 1000/' config.yml
+          echo "CI 生效的登录限流："
+          grep -A3 '^  loginRateLimit:' config.yml
+
+      # 认证服务本身。`&` 后台起，然后**轮询 /readyz 直到就绪**——
+      # 只 sleep 一个固定秒数会在慢 runner 上偶发失败，那种红是假红。
+      - name: Start the authentication service
+        working-directory: services/go-user-system
+        env:
+          APP_ENV: development
+          APP_PORT: "8082"
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+          REGISTRATION_ENABLED: "false"
+          REDIS_ENABLED: "false"
+          COOKIE_SECURE: "false"
+        run: |
+          go build -o /tmp/knowtrace-auth ./cmd
+          nohup /tmp/knowtrace-auth > /tmp/knowtrace-auth.log 2>&1 &
+          echo $! > /tmp/knowtrace-auth.pid
+          for attempt in $(seq 1 60); do
+            if curl -fsS -m 2 http://127.0.0.1:8082/readyz >/dev/null 2>&1; then
+              echo "认证服务就绪（第 ${attempt} 次探测）"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "认证服务在 60 秒内没有就绪 —— 以下是它的日志："
+          cat /tmp/knowtrace-auth.log
+          exit 1
+
+      - name: Verify the seeded account exists and holds the admin role
+        # 这一步是**证伪**，但刻意**不走登录接口**。
+        #
+        # 为什么不发一次真实登录来验：认证服务的账号级限流是
+        # `config.yml` 的 `accountLimit: 5 / 15m`，**且没有环境变量覆盖**
+        # （config.go 第 538 行是硬的默认值）。本 job 里那 4 个 spec 各登录一次
+        # = 4 次，再加这一次校验就是 **5/5** —— 一点余量都没有。
+        # 那种门在慢 runner 或将来多一个 spec 时会变成偶发红，是**脆弱的门**，
+        # 比没有门更坏（会训练人忽略红色）。
+        #
+        # 改为直接查库断言「账号存在 + 已赋 admin 角色」：
+        # 这不消耗限流预算，而且比登录更直接地证明「种子建对了」。
+        env:
+          MYSQL_PWD: knowtrace-root
+        run: |
+          row="$(mysql -h 127.0.0.1 -P 3306 -u root -N -B go_user_system -e "
+            SELECT u.username, GROUP_CONCAT(r.code ORDER BY r.code)
+            FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r ON r.id = ur.role_id
+            WHERE u.username = '${KNOWTRACE_ADMIN_USERNAME}'
+            GROUP BY u.username;")"
+          if [[ -z "$row" ]]; then
+            echo "库里没有账号 ${KNOWTRACE_ADMIN_USERNAME} —— 种子没建出来"
+            exit 1
+          fi
+          roles="${row#*$'	'}"
+          if [[ ",$roles," != *",admin,"* ]]; then
+            echo "账号 ${KNOWTRACE_ADMIN_USERNAME} 存在，但没有 admin 角色（实际：${roles}）"
+            exit 1
+          fi
+          echo "种子账号就位：${KNOWTRACE_ADMIN_USERNAME}（roles=${roles}）"
+
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run end-to-end tests
+      # ---- 运行 1：**无认证**（与改动前语义完全一致）---------------------------
+      # 这一步不设 AUTH_ENABLED=true / AUTH_E2E_*，所以：
+      #   * 那 6 个**没有登录分支**的 spec（category-deletion / claim-workflow /
+      #     knowledge-search / similar-captures / subject-timeline / topic-synthesis）
+      #     照旧直接跑。它们**不能**在认证态下跑 —— `page.goto("/")` 会被 307 到登录页；
+      #   * 需要账号的 spec 照旧 test.skip()（无凭据）。
+      # 意义在于：「无认证」这条路径本身仍然被验证，没有因为引入认证态而丢掉。
+      - name: Run the unauthenticated end-to-end tests
+        env:
+          AUTH_ENABLED: "false"
         run: pnpm test:e2e
+
+      # ---- 运行 2：**有认证**（本次新增的能力）---------------------------------
+      # 独立端口（3100）是硬要求：`reuseExistingServer` 若复用了上一次那个
+      # **没有认证**的服务，这一步就名不副实，等于没测。
+      # 只跑那 4 个真正需要账号的 spec，见 playwright.auth.config.ts 的说明。
+      - name: Run the authenticated end-to-end tests
+        env:
+          AUTH_ENABLED: "true"
+          AUTH_SERVICE_URL: http://127.0.0.1:8082
+          AUTH_REGISTRATION_ENABLED: "false"
+          AUTH_COOKIE_SECURE: "false"
+          AUTH_E2E_USERNAME: ${{ env.KNOWTRACE_ADMIN_USERNAME }}
+          AUTH_E2E_PASSWORD: ${{ env.KNOWTRACE_ADMIN_PASSWORD }}
+          PLAYWRIGHT_PORT: "3100"
+        run: pnpm exec playwright test --config playwright.auth.config.ts
+
+      - name: Print authentication service log on failure
+        if: failure()
+        run: cat /tmp/knowtrace-auth.log || true
 
       # 报告在成功时也要留痕——「跑过且全绿」本身就是证据。
       # 它是 KT-GAP-06 的正向验收产物（一次由 CI 自然触发的成功运行）。
@@ -220,5 +396,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report/
+          path: |
+            playwright-report/
+            playwright-report-auth/
           retention-days: 14
