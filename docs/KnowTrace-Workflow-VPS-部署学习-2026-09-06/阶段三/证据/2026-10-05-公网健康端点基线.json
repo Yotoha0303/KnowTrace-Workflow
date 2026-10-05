@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "started_at_utc": "2026-10-05T11:42:05.458866+00:00",
+  "finished_at_utc": "2026-10-05T11:42:25.645904+00:00",
+  "url": "https://knowtrace.duckdns.org/api/health/ready",
+  "method": "GET",
+  "expected_status": 200,
+  "requests": 200,
+  "concurrency": 5,
+  "timeout_seconds": 10,
+  "wall_seconds": 20.186742,
+  "requests_per_second": 9.907,
+  "status_counts": {
+    "200": 200
+  },
+  "failed_requests": 0,
+  "bytes_read_total": 7600,
+  "latency_ms": {
+    "min": 365.219,
+    "mean": 492.813,
+    "p50": 406.222,
+    "p95": 947.24,
+    "p99": 1374.278,
+    "max": 1902.914
+  },
+  "error_examples": [],
+  "client": {
+    "python": "3.14.2",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "proxy_environment_present": true,
+    "proxy_mode": "disabled",
+    "tls_ca_source": "custom:cacert.pem"
+  },
+  "scope_note": "This is a bounded health-endpoint baseline, not a business-flow, capacity, soak, or real-user result."
+}

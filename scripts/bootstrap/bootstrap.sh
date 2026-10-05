@@ -478,6 +478,54 @@ b_stage_verify() {
     b_info "alert-drill 未启用 —— 可选，需外部邮件（ALERT_EMAIL_ENABLED=true）后才有意义"
   fi
 
+  # (d) 业务级验收 —— 十环「08 恢复」的准出。
+  #     判据本身 2026-10-05 已落到 scripts/linux/verify-business-acceptance.sh
+  #     （登录 / 读记录 / 下载附件，含 sha256 比对），但它此前**没有任何自然时机** ——
+  #     那正是本项目反复吃亏的同一个形状：「东西写好了，没人按计划跑」。
+  #     接在这里的意义是：**每一次部署都会自然跑一次**，不需要谁记得。
+  #
+  #     四种退出码的判据**刻意不同**，别简化成「非 0 即失败」：
+  #       0 PASS           → OK
+  #       2 前置不满足     → INFO（空库 / AUTH 未启用：这是**环境状态**，不是恢复损坏）
+  #       3 脚本/环境错误  → WARN（缺 jq、缺 curl 一类。**不计入 failures** ——
+  #                          新机器上 jq 未装时会让整个部署变红，而那不是业务坏掉，
+  #                          正是 deploy 阶段反复警告过的「假失败污染整条链的结论」）
+  #       * 其余（1=真失败）→ 计入 failures
+  #
+  #     凭据**只从环境变量读，绝不入库**：
+  #       BUSINESS_USER=… BUSINESS_PASSWORD=… bash scripts/bootstrap/bootstrap.sh --all
+  local business_script="$BOOTSTRAP_DIR/scripts/linux/verify-business-acceptance.sh"
+  local business_out="" business_rc=0
+  if [[ ! -f "$business_script" ]]; then
+    b_info "业务级验收：脚本不存在 —— 跳过（不阻断部署）"
+  elif [[ -z "${BUSINESS_USER:-}" || -z "${BUSINESS_PASSWORD:-}" ]]; then
+    b_info "业务级验收：未提供 BUSINESS_USER / BUSINESS_PASSWORD → 跳过"
+    b_info "  跑法：BUSINESS_USER=… BUSINESS_PASSWORD=… bash scripts/bootstrap/bootstrap.sh --stage verify"
+  else
+    business_out="$(BUSINESS_USER="$BUSINESS_USER" BUSINESS_PASSWORD="$BUSINESS_PASSWORD"       bash "$business_script" 2>&1)" || business_rc=$?
+    case "$business_rc" in
+      0)
+        b_ok "业务级验收通过（登录 / 读记录 / 下载附件）"
+        ;;
+      2)
+        b_info "业务级验收：前置不满足（空库或 AUTH 未启用）—— **不是**恢复失败"
+        printf '%s
+' "$business_out" | grep -E 'RESULT=' | head -1 | sed 's/^/      /' || true
+        ;;
+      3)
+        b_warn "业务级验收：脚本/环境错误（退出码 3）—— 未计入失败，但请修环境"
+        printf '%s
+' "$business_out" | tail -5 | sed 's/^/      /' || true
+        ;;
+      *)
+        b_fail "业务级验收失败（退出码 $business_rc）—— 登录 / 读记录 / 下载附件 中至少一步不成立"
+        printf '%s
+' "$business_out" | tail -12 | sed 's/^/      /' || true
+        failures=$(( failures + 1 ))
+        ;;
+    esac
+  fi
+
   if (( failures == 0 )); then
     b_ok "验收通过"
     b_record "VERIFY: 全链路验收通过（$failures 个失败）"

@@ -28,7 +28,8 @@
 | └ 其中条件跳过的 | 1 | 1 | 未配真实 API Key 时跳过，见 2.2 |
 | `services/go-user-system/frontend`（**独立 npm 工作区**） | **7** | **11 passed** | CI `auth-frontend` job（**2026-10-04 新增**）—— 见 2.3 |
 | Go `_test.go`（`services/go-user-system`） | 26 | 未采集 | CI `go` job（`go test ./...`） |
-| E2E spec（`tests/e2e/`） | 18 | — | CI `e2e` job（**2026-10-04 起**，见 §5） |
+| E2E spec（`tests/e2e/`）· **无认证** | 18 | **11 passed + 8 skipped** | CI `e2e` job 第 1 次运行（**2026-10-04 起**，见 §5） |
+| E2E spec（`tests/e2e/`）· **有认证** | 4 | **4 passed** | CI `e2e` job 第 2 次运行（**2026-10-05 新增**，`playwright.auth.config.ts`，见 §5） |
 
 受版本控制的「单测文件」总数为 **52**，其中 **8 个**属于上述独立前端工作区，
 故根 vitest 实际纳入 **44** 个。**两个数字都真实，差在「谁的口径」**——引用时必须说明是哪一个。
@@ -271,6 +272,30 @@ virtual store 指向一个已不存在的位置），`pnpm add` 与 `npm install
 - AI 请求进行时重复按钮被禁用，服务端仍能安全处理重复请求。
 
 ## 5. 页面和端到端测试
+
+### 5.1 CI 里跑**两次**（2026-10-05 起）
+
+| 运行 | 配置 | 端口 | 覆盖 | 实测（run `37308236690`） |
+| --- | --- | --- | --- | --- |
+| 无认证 | `playwright.config.ts` | 3000 | 全部 18 spec | `Running 19 tests` → **11 passed / 8 skipped** |
+| 有认证 | `playwright.auth.config.ts` | 3100 | 4 个需要账号的 spec | `Running 4 tests` → **4 passed** |
+
+**为什么要拆两次**：18 个 spec 里有 6 个（`category-deletion` / `claim-workflow` /
+`knowledge-search` / `similar-captures` / `subject-timeline` / `topic-synthesis`）
+**没有登录分支**，直接 `page.goto("/")`。全局打开 `AUTH_ENABLED=true` 会把它们
+307 到登录页而**全部变红** —— 那不是「测出了问题」，是**门配错了**。
+所以认证态隔离在独立端口上跑，只覆盖真正需要账号的那 4 个。
+
+**两个会让门变脆的坑**（都已处理）：
+- 端口必须不同：`reuseExistingServer` 若复用了上一次那个**没有认证**的服务，
+  「认证态」就名不副实、等于没测；
+- 认证服务的账号登录限流是 `config.yml` 的 `accountLimit: 5 / 15m` 且**没有环境变量覆盖**，
+  而登录次数是 6 → CI 里改**运行目录下那份副本**（源文件不动）。
+
+**剩余 8 个 skip 现在各自有明确且互不相同的前置原因**（需要第二个非 admin 账号 /
+CC-Switch 代理 / 自建 fixture / 需开启注册），不再是一句含糊的「CI 没有凭据」。
+
+### 5.2 场景
 
 使用 Playwright 覆盖：
 

@@ -15,7 +15,15 @@ test("go-user-system login, refresh recovery and logout", async ({ context, page
   await page.getByRole("button", { name: "登录", exact: true }).click();
 
   await expect(page).toHaveURL(/\/search\?type=capture$/);
-  await expect(page.getByText(`@${username}`)).toBeVisible();
+  // 2026-10-05（KT-GAP-41）：原先用 `getByText('@用户')`，它在真实账号下会命中
+  // **2 个元素**（账户入口是一个 `<details>`，里面嵌套的 `<small>@用户 · 账户中心</small>`
+  // 与外层 link 的可见文本相同）→ strict mode violation。
+  // 这条 spec 此前一直 skipped（CI 没有账号），所以这个脆弱点从没暴露过 ——
+  // 与 KT-GAP-06 当时抓到的 `getByLabel("原文")` 命中 2 个元素是**同一形状**。
+  // 改用本项目 account-center.spec.ts 已经在用的写法：按 role 定位，唯一。
+  await expect(
+    page.getByRole("link", { name: new RegExp(`@${username}.*账户中心`) }),
+  ).toBeVisible();
   expect(await page.evaluate(() => document.cookie)).not.toContain("access_token");
   expect(await page.evaluate(() => document.cookie)).not.toContain("refresh_token");
 
