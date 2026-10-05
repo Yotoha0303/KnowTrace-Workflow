@@ -114,7 +114,19 @@ if ! rclone lsd "$remote" >/dev/null 2>&1; then
   if [[ "$remote" == /* || "$remote" == :local:* ]]; then
     mkdir -p "${remote#:local:}" 2>/dev/null || true
   fi
-  rclone lsd "$remote" >/dev/null 2>&1 || { fail "无法访问异地目标：$remote"; exit 3; }
+  if ! rclone lsd "$remote" >/dev/null 2>&1; then
+    fail "无法访问异地目标：$remote"
+    # 把 rclone 自己的报错打出来 —— 最常见的是「配置读不到」，而那两个原因
+    # （配置路径 / systemd 沙箱）从这句笼统的失败里完全看不出来。
+    # 2026-10-04 首次自然触发失败就是栽在这：unit 的 ProtectHome=true 把 /root
+    # 从服务视角拿掉了，而 rclone 的配置正在 /root/.config/rclone/ 下。
+    rclone_error="$(rclone lsd "$remote" 2>&1 | tail -3 || true)"
+    [[ -n "$rclone_error" ]] && log "      rclone: $rclone_error"
+    log "      配置路径：$(rclone config file 2>/dev/null | tail -1 || printf '未知')"
+    log "      排查：若报 'didn't find section in config file'，先确认本服务能读到 rclone 配置"
+    log "            （systemd 沙箱的 ProtectHome 会把 /root 藏起来，见该 unit 的注释）"
+    exit 3
+  fi
 fi
 ok "异地目标可访问：$remote"
 

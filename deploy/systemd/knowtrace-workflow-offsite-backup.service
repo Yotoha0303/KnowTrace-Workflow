@@ -29,6 +29,33 @@ IOSchedulingPriority=7
 # 只读脚本 + 只写暂存区与指标文件，再收紧一层
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/var/tmp /var/backups/knowtrace /opt/knowtrace/runtime/node-exporter
+
+# ⚠ ProtectHome 不能是 `true`（2026-10-05 实测修正）
+# ---------------------------------------------------------------
+# rclone 的配置在 `$HOME/.config/rclone/rclone.conf`，而本服务以 root 跑，
+# 所以 HOME=/root。写成 `ProtectHome=true` 会把 /root 整个从服务视角拿掉：
+#
+#   $ systemd-run --property=ProtectHome=yes rclone lsd "$OFFSITE_REMOTE"
+#   NOTICE: Config file "/root/.rclone.conf" not found - using defaults
+#   CRITICAL: Failed to create file system ... didn't find section in config file ("offsite")
+#   沙箱内 `ls /root/.config/rclone/` → No such file or directory，且 `HOME=` 是空的
+#
+# 后果：**首次自然触发（2026-10-04 20:11:30 UTC）必然失败**
+# （`[FAIL] 无法访问异地目标`，exit 3）。此前「异地备份已能跑通」全是
+# 人工在交互 shell 里跑的 —— 那里 /root 可见，所以一直没暴露。
+#
+# 另一个必须**可写**的原因：Google 的 access token 只活 1 小时，rclone
+# 会用 refresh_token 换新的并**写回配置文件**。只读挂载会让长时间不跑的场景
+# 在刷新时失败，所以这里同时放行写入。
+#
+# 实测两种修法（`systemd-run` A/B）：
+#   ProtectHome=read-only + 放行 rclone 目录 → 读 OK、写 OK   ← 采用
+#   ProtectHome=yes + BindPaths=/root/.config/rclone → 读 FAIL、写 FAIL（BindPaths 救不了）
+#
+# 已知的残留弱点（KT-GAP-36）：read-only 下 /root 里**其它**文件变得可读。
+# 更彻底的做法是把配置搬出 /root（例如 /etc/knowtrace/rclone.conf 并用
+# `--config` 指过去），那时可以配 `ProtectHome=yes` + `BindPaths=` 单文件。
+# 见 `deploy/README.md`。
+ProtectHome=read-only
+ReadWritePaths=/var/tmp /var/backups/knowtrace /opt/knowtrace/runtime/node-exporter /root/.config/rclone

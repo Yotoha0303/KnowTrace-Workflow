@@ -63,6 +63,49 @@ deploy/
 
 ---
 
+## ⚠ systemd 沙箱会静默架空「跑起来才发现的依赖」
+
+2026-10-05 实测踩到一次，记在这里因为**它会以「单元失败」的形式出现，而根因在沙箱**：
+
+`knowtrace-workflow-offsite-backup.service` 写着 `ProtectHome=true`，
+而 rclone 的配置在 `/root/.config/rclone/rclone.conf`（服务以 root 跑 → `HOME=/root`）。
+于是沙箱内的 rclone 读不到配置：
+
+```text
+$ systemd-run --property=ProtectHome=yes --pipe sh -c 'echo "HOME=$HOME"; ls /root/.config/rclone/'
+HOME=
+ls: cannot access '/root/.config/rclone/': No such file or directory
+NOTICE: Config file "/root/.rclone.conf" not found - using defaults
+CRITICAL: Failed to create file system ... didn't find section in config file ("offsite")
+```
+
+**后果**：该单元**只要按排班跑就必然失败**。但它此前每次「跑通」都是人工在交互 shell 里跑的
+（那里 `/root` 可见），所以一直没暴露 —— 直到首次自然触发（2026-10-04 20:11:30 UTC）失败。
+
+**修法**（实测有效的两条，其余组合不行）：
+
+| 写法 | 读配置 | 写回 token |
+| --- | --- | --- |
+| `ProtectHome=true`（原状） | ❌ | ❌ |
+| `ProtectHome=yes` + `BindPaths=/root/.config/rclone` | ❌ | ❌ |
+| **`ProtectHome=read-only` + `ReadWritePaths=… /root/.config/rclone`** | ✅ | ✅ |
+
+**必须可写**的原因：Google 的 access token 只活 1 小时，rclone 换新后会**写回配置文件**；
+只读挂载会让长时间不跑的场景在刷新时失败。
+
+**写新单元时的检查清单**：
+
+1. 这个服务要读的配置**在不在 `$HOME` 下**？在的话 `ProtectHome=true` 会把它藏掉。
+2. 它要不要**写回**那个配置？（token 刷新、状态文件、缓存）→ 需要 `ReadWritePaths`。
+3. 用 `systemd-run --property=…` 复现沙箱**先验证一次**，别只靠 `bash script.sh` 试跑 ——
+   后者跑在交互 shell 里，**沙箱根本不生效**。
+
+**残留弱点**（`KT-GAP-35`，未解决）：`read-only` 下 `/root` 里其它文件变得可读。
+彻底做法是把这类配置搬出 `/root`（如 `/etc/knowtrace/`）并用显式路径引用，
+那时可以配 `ProtectHome=yes` + 针对单文件的 `BindPaths=`。
+
+---
+
 ## 相关
 
 - [一键部署入口](../scripts/install.sh) —— 目前的主链路
