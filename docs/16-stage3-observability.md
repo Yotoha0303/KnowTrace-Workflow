@@ -62,6 +62,7 @@ Caddy / Nginx / Docker JSON logs -> Alloy -> Loki -> Grafana（同一界面里�
 | `scripts/linux/deploy-observability.sh` | 容量预检、配置校验、部署和验收 |
 | `scripts/linux/verify-observability.py` | 端点、target、PromQL、Grafana 与 PLG 日志栈验收 |
 | `scripts/linux/observability-drill.sh` | 可恢复的监控故障演练 |
+| `scripts/linux/verify-alert-delivery-drill.sh` | **告警送达演练的编排器**：跑演练 + **断言邮件投递计数至少 +1**（见下） |
 
 ## 部署 SOP
 
@@ -179,6 +180,25 @@ scripts/linux/observability-drill.sh blackbox
 ```
 
 脚本先验证正常基线，再停止 Blackbox Exporter，等待 `KnowTraceMetricsTargetDown` 进入 firing 并出现在 Alertmanager，随后通过 trap 恢复容器，重新验证 12 个 targets 并等待告警清除。它不会停止 KnowTrace-Workflow 应用或数据库。
+
+### ⚠ 它**不**验证邮件送达 —— 要验投递得用编排器
+
+上面那个脚本只断言到「**Alertmanager 收到了**」。它**不可能**验证邮件真的发出去，
+原因是 AM 的 `group_wait` 是 30s：告警进 AM 后要等满 30 秒才首次投递，
+而演练的验证循环 3 秒一轮、一确认收到就**立刻**恢复故障 ——
+整组在 `group_wait` 到期前就被清掉，**AM 一封都不发**，而演练照样报 `RESULT=PASS`。
+
+```bash
+# 编排器：取投递基线 → 以「保持时长 > group_wait」跑演练 → 断言计数至少 +1
+bash scripts/linux/verify-alert-delivery-drill.sh
+```
+
+实测时间线（2026-10-04，修复前）：`15:57:40` firing → `15:58:05` 已 resolve，
+而首次投递本应在 `15:58:10` —— 差 5 秒，整组就没了。
+
+**判据落在 `alertmanager_notifications_total{integration="email"}` 的增量上**，
+不落在「演练报了 PASS」上。2026-10-05 起它每周一 20:30 UTC 由
+`knowtrace-workflow-alert-drill.timer` 自然跑（见 `deploy/README.md`）。
 
 ## 日志栈（PLG）与查询
 

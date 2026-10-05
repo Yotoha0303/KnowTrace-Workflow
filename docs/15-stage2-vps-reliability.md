@@ -68,6 +68,24 @@ sudo /opt/knowtrace/scripts/linux/verify-restore.sh "$archive" \
 
 这项检查验证归档可恢复及数据统计，不等同于完整浏览器业务旅程。灾难恢复演练还需要在隔离环境完成登录、查询一条已知记录和读取一张已知图片。
 
+**这一步现在有脚本了**（2026-10-05 补）：
+
+```bash
+# 凭据从环境变量读，不要写进任何入库文件
+BUSINESS_USER=<用户名> BUSINESS_PASSWORD=<口令> bash scripts/linux/verify-business-acceptance.sh
+```
+
+三步判据都可证伪：① 登录且**会话在下一跳仍有效**；② 读记录**至少 1 条**（空库不算通过）；
+③ 下载真实附件且**字节数 + `sha256` 与库里记录一致**（字节数对但内容不对只有哈希能抓）。
+
+**它刻意区分两种退出码**：`1` = 真的坏了；`2` = **前置不满足**（缺凭据 / AUTH 未启用 /
+库里还没有业务数据）。**这个区分很重要**：本机生产库当前没有真实业务数据，
+判据 ②③ 必然走 `exit 2`；若把它当 FAIL，「环境还没准备好」就会长期伪装成一个红色缺口。
+
+> **2026-10-05 实测**：① 登录 **200 ✅**、② 会话 **200 ✅** ——
+> 这两步**空库上也能验**，现已通过；③ 读记录/下载附件因无数据 → `exit 2`。
+> 也就是说这条恢复判据**只差数据**，脚本已就位。
+
 **真实恢复后必须补一步**：`verify-restore.sh` 把 `uploads.tar.gz` 解到临时目录核对数量，**不写回真实路径**，因此不会暴露属主问题。真正从备份重建 `data/uploads` 时，`tar` 解出的文件属主是解包者（通常是 root），而容器内进程是 `uid=1001`，图片上传会立刻以 `EACCES` 失败。恢复后执行：
 
 ```bash
@@ -80,7 +98,17 @@ sudo PROJECT_DIR=/opt/knowtrace bash scripts/linux/fix-uploads-ownership.sh
 
 仓库提供每日备份单元。它在 Asia/Shanghai 03:20 后的五分钟随机窗口执行一致性备份，因此该时段可能短暂返回 502；默认删除超过 14 天的旧备份集，但无论时间如何至少保留最近 7 份。删除器只接受脚本生成的严格文件名，并同时删除对应目录、校验文件和 VPS 上的加密副本。
 
+> **别照抄下面这段手写安装** —— 它是历史记录，保留是为了说明「手工步骤长什么样」。
+> **日常与全新部署都走 `scripts/linux/deploy-observability.sh`**，它一次装好
+> **三组**单元（backup / offsite-backup / alert-drill）并做一次 `daemon-reload`。
+>
+> **为什么特别提醒**：正是因为照这段手写，`deploy-observability.sh` 原先**只装了 backup 两个**，
+> 而 `offsite-backup.{service,timer}` **全仓没有任何安装器**（只能找到 timer 引用自己）——
+> **全新机器上它永远不会被装**，而 `bootstrap.sh` 的 verify 只是「检查它是否 enabled」。
+> 2026-10-05 已修（三组一起装）。
+
 ```bash
+# 历史做法（手工、只装 backup 一组）—— 仅作参考
 sudo chmod 700 /opt/knowtrace/scripts/linux/backup-all.sh
 sudo chmod 700 /opt/knowtrace/scripts/linux/prune-backups.sh
 sudo install -m 644 deploy/systemd/knowtrace-workflow-backup.service /etc/systemd/system/knowtrace-workflow-backup.service

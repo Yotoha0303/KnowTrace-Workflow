@@ -8,16 +8,17 @@
 | 路径 | 内容 |
 | --- | --- |
 | `scripts/daily-check.sh` | 日巡检（12 个章节，覆盖最广）：主机/负载/内存/磁盘/inode、systemd 服务、Docker、容器日志扫描、健康端点、备份新鲜度、监听端口与 UFW、仓库状态 |
-| `scripts/daily-ops.sh` | 日巡检（精简版）：资源、磁盘、容器、健康端点、**监控 Targets**，带统一结论与退出码 |
+| `scripts/daily-ops.sh` | 日巡检（精简版）：资源、磁盘、容器、健康端点、**监控 Targets**、**主机 systemd 单元**，带统一结论与退出码 |
 | `scripts/weekly-check.sh` | 周巡检：备份完整性校验、日志错误聚类与上周基线对比、证书有效期、异常登录 |
 | `scripts/monthly-ops.sh` | 月巡检：隔离恢复演练、依赖更新检查、故障复盘、文档更新。**唯一会写服务器的脚本** |
 | `scripts/log_analyzer.py` | 被 weekly 调用：日志错误聚类 + 与基线对比 |
 | `scripts/ops-report.py` | 被 monthly 调用：多期报告汇总、巡检闭环新鲜度 |
 | `scripts/cert_check.py` | 被 weekly 调用：TLS 证书有效期与链校验 |
 | `scripts/security-check.sh` | 被 weekly 调用：异常登录与端口合规 |
-| `lib/` | Bash 与 Python 公共库，两个日巡检脚本都依赖 |
+| `lib/` | Bash 与 Python 公共库，两个日巡检脚本都依赖。**2026-10-05 起含 `ops_systemd_check()`**（关键服务 / 备份定时器 / failed 单元白名单）与 `mon.textfile` 判据 —— 放在这里是因为 `daily-check.sh` **没有定时器**，判据必须落在真会跑的脚本上 |
 | `systemd/` | 6 个定时任务单元 + [`MEMO.md`](systemd/MEMO.md)（安装/回滚/退出码语义/踩过的坑）。**2026-09-28 已安装并 enable** |
 | `../deploy/systemd/` | ⚠️ **另一组单元在这里，不在本目录** —— 见下方说明 |
+| `ops.conf.example` | 配置模板。**2026-10-05 新增键 `SYSTEMD_FAILED_ALLOWLIST`** —— failed 单元判据的白名单，**缺省为空**（= 任何 failed 都算问题）。每一项都要能说清理由；当前只有 `repass.service`（`INC-S2-003` 判为云厂商控制台救援链路，刻意保留）。**改这个键等于改判据口径**，别为了让列表好看而往里面加 |
 
 ### 为什么 systemd 单元分在两处
 
@@ -26,11 +27,18 @@
 | 位置 | 单元 | 安装者 | 装的是什么 |
 | --- | --- | --- | --- |
 | `scripts/ops/systemd/` | `daily-ops` / `weekly-check` / `monthly-ops`（3 组 service+timer）+ `install.sh` | **本目录的 `systemd/install.sh`**，或 `scripts/bootstrap/bootstrap.sh --stage ops` | **巡检**（只读巡检的定时任务） |
-| `deploy/systemd/` | `knowtrace-workflow-backup` / `knowtrace-workflow-offsite-backup`（2 组 service+timer） | `scripts/linux/deploy-observability.sh`（第 105 行起） | **备份**（本地一致性备份 + 异地上传） |
+| `deploy/systemd/` | `knowtrace-workflow-backup` / `knowtrace-workflow-offsite-backup` / **`knowtrace-workflow-alert-drill`**（3 组 service+timer） | `scripts/linux/deploy-observability.sh`（第 105 行起） | **备份**（本地一致性备份 + 异地上传）+ **告警送达演练** |
 
-**为什么没有合并**：两者的安装时机与归属不同——备份单元随「核心监控部署」一起装
+**为什么没有合并**：两者的安装时机与归属不同——备份与演练单元随「核心监控部署」一起装
 （`deploy-observability.sh` 的 `[5/5]` 步），巡检单元随「运维工具包」一起装。
 合并到一处需要在两个安装器之间建立依赖，收益不抵改动风险。
+
+> **2026-10-05 修**：上面 `deploy/systemd/` 那行原先只写了两组（backup / offsite），
+> 且 `deploy-observability.sh` **实际只装了 backup 那两个** ——
+> `offsite-backup.{service,timer}` 全仓没有任何安装器（只能找到 timer 引用自己），
+> 所以**全新机器上永远不会被装**，而 `bootstrap.sh` 的 verify 只是「检查它是否 enabled」。
+> 已把三组装在一起。新增的 `alert-drill` 是告警送达演练（`Mon 20:30 UTC`，
+> `Persistent=false` —— 判据要求自然触发，补跑不算）。
 
 **改单元时注意**：改 `scripts/ops/systemd/` 下的要跑 `install.sh`；
 改 `deploy/systemd/` 下的要重跑 `deploy-observability.sh`。**两者都要 `daemon-reload`。**

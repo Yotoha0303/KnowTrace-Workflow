@@ -9,8 +9,27 @@
 | `knowtrace-workflow-daily-ops.timer` | 每天 19:34 UTC | 日巡检（后跑，能看到当天备份） |
 | `knowtrace-workflow-weekly-check.timer` | 周一 20:04 UTC | 周巡检 |
 | `knowtrace-workflow-monthly-ops.timer` | 每月 1 日 21:06 UTC | 月巡检（演练模式） |
+| `knowtrace-workflow-offsite-backup.timer` | 每天 20:12 UTC | 异地加密上传（**不属本目录**，见 §9） |
+| `knowtrace-workflow-alert-drill.timer` | 周一 20:30 UTC | 告警送达演练（**不属本目录**，见 §9） |
 
-（实际触发时间会带 `RandomizedDelaySec` 的随机偏移，所以上面不是整点。）
+（实际触发时间会带 `RandomizedDelaySec` 的随机偏移，所以上面不是整点。
+**别把某次读数写死进文档** —— 一律 `systemctl list-timers` 现查。）
+
+> **2026-10-05 补两条与本目录相关的知识**：
+>
+> 1. **`systemd.failed-units` 判据**：巡检现在会检查 `systemctl --failed`，
+>    只对**不在 `SYSTEMD_FAILED_ALLOWLIST` 里**的 failed 单元报 FAIL
+>    （白名单**缺省为空** = 任何 failed 都算问题）。本机白名单只有 `repass.service`
+>    （`INC-S2-003` 判它是云厂商控制台救援链路，刻意保留）；`setupfirst.service`
+>    按 `INC-S2-002` 的处置已清掉，**不在白名单**。
+>    ⚠ 本节 §7 的注释「本机另有一个与巡检无关的 repass.service 长期是 failed 状态」
+>    现在**过时了**：它不再是「与巡检无关」——巡检会看到它，只是因为它**在白名单里**
+>    才不报。若哪天它不在白名单了，日报会 FAIL。这两件事要一起看。
+>
+> 2. **`alert-drill` 的 `Persistent=false` 是本目录之外的一个刻意例外**（见 §9）：
+>    判据要求「由定时器自然触发」，而安装时的 `Persistent=` 补跑**不算自然**
+>    （参 `KT-GAP-22` 对 weekly-check 的处理）。本目录的四个单元都是
+>    `Persistent=true`，那个不同是**有意**的，不是漏配。
 
 ---
 
@@ -18,8 +37,8 @@
 
 | 单元 | 类型 | 触发时间（UTC） | 做什么 |
 | --- | --- | --- | --- |
-| `knowtrace-workflow-daily-ops.timer` → `.service` | 每天 | `*-*-* 19:30:00` | 只读日巡检：资源、磁盘、容器、健康端点、监控 Targets |
-| `knowtrace-workflow-weekly-check.timer` → `.service` | 每周一 | `Mon *-*-* 20:00:00` | 只读周巡检：备份完整性校验、日志错误聚类、证书有效期、异常登录 |
+| `knowtrace-workflow-daily-ops.timer` → `.service` | 每天 | `*-*-* 19:30:00` | 只读日巡检：资源、磁盘、容器、健康端点、监控 Targets、**主机 systemd 单元（含 failed 单元白名单）** |
+| `knowtrace-workflow-weekly-check.timer` → `.service` | 每周一 | `Mon *-*-* 20:00:00` | 只读周巡检：备份完整性校验、日志错误聚类、证书有效期、异常登录、**主机 systemd 单元** |
 | `knowtrace-workflow-monthly-ops.timer` → `.service` | 每月 1 日 | `*-*-01 21:00:00` | 月巡检：**演练模式**，只出计划不执行写操作 |
 
 三个 `.service` 都是 `Type=oneshot`，三个 `.timer` 都是 `Persistent=true`。
@@ -196,7 +215,10 @@ sudo systemctl start knowtrace-workflow-daily-ops.service
 systemctl --no-pager status knowtrace-workflow-daily-ops.service
 journalctl -u knowtrace-workflow-daily-ops.service -n 50
 
-# 看有没有失败（注意：本机另有一个与巡检无关的 repass.service 长期是 failed 状态）
+# 看有没有失败
+#（2026-10-05 更正：这条注释原先写「本机另有一个与巡检无关的 repass.service 长期是
+#  failed 状态」—— 现在**不再「与巡检无关」**：巡检的 systemd.failed-units 判据会看它，
+#  只是因为它在 SYSTEMD_FAILED_ALLOWLIST 里才不报。若哪天从白名单移走，日报会 FAIL。）
 systemctl --failed
 
 # 临时停掉定时（排查时）

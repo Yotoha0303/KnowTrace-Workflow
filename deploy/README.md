@@ -26,7 +26,7 @@ deploy/
 ├── grafana/      数据源与看板的 provisioning
 ├── monitoring/   Prometheus 配置 / 规则 / blackbox 探针
 ├── nginx/        127.0.0.1:8080 的站点配置（Caddy 的下游）
-└── systemd/      备份与异地备份两组单元
+└── systemd/      周期任务单元三组：备份 / 异地备份 / **告警送达演练**
 ```
 
 **三个刻意的"不在这里"**：
@@ -103,6 +103,26 @@ CRITICAL: Failed to create file system ... didn't find section in config file ("
 **残留弱点**（`KT-GAP-35`，未解决）：`read-only` 下 `/root` 里其它文件变得可读。
 彻底做法是把这类配置搬出 `/root`（如 `/etc/knowtrace/`）并用显式路径引用，
 那时可以配 `ProtectHome=yes` + 针对单文件的 `BindPaths=`。
+
+---
+
+## `systemd/` 的三组单元（都由 `deploy-observability.sh` 安装）
+
+| 单元 | 排班 | 作用 | 没配好时 |
+| --- | --- | --- | --- |
+| `knowtrace-workflow-backup` | `03:20 +08` 每日 | 本地一致性备份（停写型快照） | 无前置，直接跑 |
+| `knowtrace-workflow-offsite-backup` | `04:10 +08` 每日 | 异地加密上传（rclone + age） | `ConditionPathExists` 缺 age 公钥则**静默跳过** |
+| `knowtrace-workflow-alert-drill` | `Mon 20:30 UTC` 每周 | 告警送达演练（停 blackbox → 断言邮件投递 +1） | `.env.observability` 不存在则跳过；未启用邮件时编排器 exit 2 |
+
+> **2026-10-05 补记**：后两组的**安装**此前是缺的 —— `deploy-observability.sh`
+> 只装了 `backup` 那两个，`offsite-backup.{service,timer}` **全仓没有任何安装器**
+> （只能找到 timer 引用自己），所以**全新机器上永远不会被装**，
+> 而 `bootstrap.sh` 的 verify 阶段只是「检查它是否 enabled」。
+> 已把三组装在一起、一次 `daemon-reload`。
+
+**`alert-drill` 的 `Persistent=false` 是刻意的**（与本目录其它单元相反）：
+判据要求「由定时器自然触发」，而「安装时的 `Persistent=` 补跑」不算自然。
+代价是错过就等下周 —— 演练不紧急，用这个换「每次运行都是排班真实触发」。
 
 ---
 
