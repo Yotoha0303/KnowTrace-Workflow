@@ -21,7 +21,7 @@ ADR 用于记录重要技术决策及其背景，避免以后只知道“用了�
 - [ADR-0015：按创建者隔离业务数据](0015-creator-scoped-data-access.md)
 - [ADR-0016：多平台客户端与原生令牌认证](0016-native-client-auth.md)
 - [ADR-0017：以 Workspace 为数据边界的应用层隔离模型](0017-workspace-isolation-model.md)
-- [ADR-0018：桌面端外壳的前提与形态选择（proposed）](0018-desktop-shell-prerequisites.md)
+- [ADR-0018：桌面端外壳的前提与形态选择](0018-desktop-shell-prerequisites.md)
 
 状态说明：
 

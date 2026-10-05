@@ -50,14 +50,20 @@ case "$output_kind" in
     ok "Web 构建产物形态 = standalone（一个 Node 服务，**不是**静态目录）"
     echo
     info "对桌面端的直接后果：Tauri 的 frontendDist **喂不进**当前产物。"
-    info "可走的路只剩两条（都不是「套一下就行」）："
-    info "  T3 加载远程 URL —— 改动最小，但**离线不可用**，它不是桌面应用，只是没地址栏的浏览器"
-    info "  T2 进程内 Node sidecar —— 能离线，但要打包 Node 运行时（约 +60–100MB）"
-    info "被否：T1 静态导出（output: \"export\"）—— 会关掉 Server Actions 与动态路由，"
-    info "      等于重写业务逻辑，违反 ADR-0016。"
+    echo
+    info "**决策已定（ADR-0018，accepted）：走 T2 —— 进程内 Node sidecar。**"
+    info "  理由：\`docs/18\` §M2 已把移动端的离线队列列为必做，而「随手记录」是主路径；"
+    info "        桌面端若不能离线记录，同一用户在两端的采集行为会不一致。"
+    info "  出局：T3（加载远程 URL）离线时连界面都出不来，只是「没有地址栏的浏览器」；"
+    info "        T1（静态导出）会关掉 Server Actions 与动态路由，违反 ADR-0016。"
+    echo
+    info "**但形态定了不等于能开工。** T2 有三个未定子问题（\`KT-DEFER-010\`）："
+    info "  ① Node 运行时的打包与体积预算（约 +60–100MB）"
+    info "  ② sidecar 的进程生命周期与端口分配（崩溃重启 / 端口冲突 / 退出清理）"
+    info "  ③ 离线队列与 \`Idempotency-Key\` 的对接"
+    info "三者任一未定都不动工，且不与 M2/M3/M4 并行。"
     echo
     info "决策与边界见 docs/adr/0018-desktop-shell-prerequisites.md。"
-    info "本脚本只保证「前提可见且可证伪」，**不代替形态决策**。"
     ;;
   export)
     fail "检测到 output: \"export\" —— 静态导出会关掉 Server Actions 与动态路由。"
