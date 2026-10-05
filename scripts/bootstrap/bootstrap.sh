@@ -470,6 +470,13 @@ b_stage_verify() {
   else
     b_info "offsite-backup 未启用 —— 可选，需 age 公钥与 rclone 远端后才能工作"
   fi
+  # alert-drill 同类：它需要外部邮件（SMTP）才有意义 —— 没配时编排器会
+  # 以退出码 2（前置不满足）跳过，不是失败。所以这里也只记信息。
+  if [[ "$(systemctl is-enabled "knowtrace-workflow-alert-drill.timer" 2>/dev/null)" == "enabled" ]]; then
+    b_ok "alert-drill 定时器已启用（告警送达演练，每周一）"
+  else
+    b_info "alert-drill 未启用 —— 可选，需外部邮件（ALERT_EMAIL_ENABLED=true）后才有意义"
+  fi
 
   if (( failures == 0 )); then
     b_ok "验收通过"

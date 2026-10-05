@@ -1,0 +1,48 @@
+[Unit]
+Description=KnowTrace-Workflow 告警送达演练（真实停机 + 断言邮件投递）
+# Documentation= 刻意用**纯 ASCII 路径**。本项目的运维单元踩过中文路径的坑
+# （systemd 只接受可打印 ASCII 的 URI；写中文路径要百分号编码且每个 % 写成 %%，
+# 且 systemd-analyze verify 查不出第二种错法）—— 见 systemd/MEMO.md §6.1。
+# 这里指向 deploy/README.md（ASCII），它记着 systemd 沙箱的完整教训。
+Documentation=file:///opt/knowtrace/deploy/README.md
+# 演练要停/起一个探针容器，所以先保证 docker 在。
+After=docker.service network-online.target
+Wants=network-online.target
+
+# 惰性：没配外部邮件就跳过 —— 演练的核心判据是「邮件投递计数 +1」，
+# 没配 SMTP 时它必然失败，而那是**配置没做**，不是链路坏了。
+# 这里只断言环境文件存在；`ALERT_EMAIL_ENABLED` 的实际值由编排器第一步检查
+# 并以退出码 2（前置不满足）区分 —— 与 `test-email-alert.sh` 用的是同一个判据。
+ConditionPathExists=/opt/knowtrace/.env.observability
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/knowtrace
+# 编排器自己从 runtime/alertmanager/alertmanager.json 读 `group_wait`，
+# 据此把 DRILL_HOLD_SECONDS 设成**大于 group_wait**。这是这条演练成立的关键：
+# 2026-10-04 实测过，若不保持到投递之后，告警会在首次投递前被 resolve，
+# AM **一封都不发**，而演练照样报 PASS。
+ExecStart=/usr/bin/bash /opt/knowtrace/scripts/linux/verify-alert-delivery-drill.sh
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# 沙箱。**先把 `ProtectSystem=full` 的确切含义写清楚**（2026-10-05 实测确认）：
+# 它只把 `/usr`、`/boot`、`/efi`、`/etc` 挂成只读；**`/opt` 与 `/var` 仍然可写**
+# （那是 `ProtectSystem=strict` 才做的）。本演练要写的两处正好都在可写区：
+#   /opt/knowtrace/...                 脚本会 chmod .env.observability、建 runtime/ 子目录
+#   /var/lib/knowtrace + /var/log      演练记录与演练日志
+# 实测：在 `ProtectSystem=full` 下 `chmod /opt/knowtrace/.env.observability` 与
+# `touch /opt/knowtrace/runtime/...` 都是 OK 的。
+# `ReadWritePaths` 在 `full` 下并非必需，这里**显式列出是为了将来有人改成 `strict` 时不至于静默失效**。
+#
+# ⚠ 特别注意**不要**写 `ProtectHome=true` —— 参 offsite-backup 的教训（KT-GAP-35）：
+# 那会把 /root 从服务视角拿掉。本演练目前不读 /root 下的东西，
+# 但「要读的东西在不在 $HOME 下」这个问题在本项目已经啃过一次，写单元时先想清楚。
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/knowtrace /var/log
+
+[Install]
+WantedBy=multi-user.target

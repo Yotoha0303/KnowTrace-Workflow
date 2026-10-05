@@ -114,10 +114,27 @@ else
   echo "         人工核对：curl -s http://127.0.0.1:9090/api/v1/rules | grep revision" >&2
 fi
 
+# ---- 安装周期任务单元 ----
+# 原先这里只装 backup 一组。2026-10-05 补上另外两组 —— 它们此前**只有单元文件、
+# 没有任何安装器**（全仓 grep 只能找到 timer 自己引用自己），所以**全新机器上
+# 永远不会被安装**，而 bootstrap.sh 的 verify 阶段只是「检查它是否 enabled」，
+# 等于假设了一个没人做的步骤。已实测确认：`deploy/systemd/` 下有文件，
+# 但 `deploy-observability.sh` 之前只 install 了 backup 那两个。
+#
+# 三组单元一起装、一次 daemon-reload：
+#   backup         本地一致性备份（每日）
+#   offsite-backup 异地加密上传（每日）—— 未配 age 公钥时由 ConditionPathExists 跳过，装了是惰性的
+#   alert-drill    告警送达演练（每周）—— 未配外部邮件时由编排器 exit 2 跳过
 install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-backup.service" /etc/systemd/system/knowtrace-workflow-backup.service
 install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-backup.timer" /etc/systemd/system/knowtrace-workflow-backup.timer
+install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-offsite-backup.service" /etc/systemd/system/knowtrace-workflow-offsite-backup.service
+install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-offsite-backup.timer" /etc/systemd/system/knowtrace-workflow-offsite-backup.timer
+install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-alert-drill.service" /etc/systemd/system/knowtrace-workflow-alert-drill.service
+install -m 644 "$project_directory/deploy/systemd/knowtrace-workflow-alert-drill.timer" /etc/systemd/system/knowtrace-workflow-alert-drill.timer
 systemctl daemon-reload
 systemctl enable --now knowtrace-workflow-backup.timer >/dev/null
+systemctl enable --now knowtrace-workflow-offsite-backup.timer >/dev/null
+systemctl enable --now knowtrace-workflow-alert-drill.timer >/dev/null
 "$script_directory/write-backup-metrics.sh"
 
 echo "[5/6] 断言运行态 revision"

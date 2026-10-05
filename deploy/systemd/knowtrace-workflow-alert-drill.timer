@@ -1,0 +1,33 @@
+[Unit]
+Description=Run the KnowTrace-Workflow alert delivery drill weekly
+
+[Timer]
+# 周一 20:30 UTC —— 排在 weekly-check（20:00）之后，同一天的自然节律。
+#
+# 为什么是「每周」而不是每天或每月：
+#   * 每天：每次演练发 1–2 封邮件（send_resolved=true 会让一条告警产生
+#     firing + resolved 两封）→ 一年 700+ 封演练邮件，**会训练人忽略邮件**
+#     （台账 D11 写下要避免的正是这个）。
+#   * 每月：链路断了最长 30 天才被发现。
+#   * 每周：一年约 100 封，可接受；且与 weekly-check 同日。
+#
+# 影响边界：演练**只停 blackbox-exporter**（探针组件，不承载用户流量）。
+# INC-S3-001 原文：「Prometheus 无法抓取 Blackbox Exporter；
+# **KnowTrace-Workflow 和认证业务保持在线**」。所以停的是监控探针、不是业务。
+OnCalendar=Mon *-*-* 20:30:00 UTC
+
+# ⚠ 刻意 **Persistent=false** —— 与其它定时器相反，这里**不补跑**。
+# README 的判据写着「自然发生 = 由定时器 / CI / 真实事件触发，不是人工」，
+# 而台账明确把「安装时的 Persistent= 补跑」记为**非自然**（见 KT-GAP-22 对
+# weekly-check 的处理）。开 Persistent 会让首次运行可能是补跑，证据就不干净了。
+# 代价：错过就等下周 —— 演练不紧急，用这个换「每次运行都是排班真实触发」。
+Persistent=false
+
+# 演练本身有约 2–4 分钟窗口（group_wait 30s + hold 60s + 恢复与收敛），
+# 给一点随机化避免与 weekly-check 的收尾撞在一起。
+RandomizedDelaySec=60
+AccuracySec=1min
+Unit=knowtrace-workflow-alert-drill.service
+
+[Install]
+WantedBy=timers.target
