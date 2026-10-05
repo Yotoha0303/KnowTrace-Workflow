@@ -740,14 +740,26 @@ if action_enabled "report" MONTHLY_BUILD_REPORT; then
         args=(--reports-dir "$REPORTS_DIR")
         [[ -n "${OPS_CONF:-}" ]] && args+=(--conf "$OPS_CONF")
         [[ -n "$out_json" ]] && args+=(--json "$out_json")
-        if python3 "$OPS_REPORT_SCRIPT" "${args[@]}" --no-color --quiet >/dev/null 2>&1; then
-            ops_ok "apply.report" "汇总报告已生成"
+        # 退出码语义不同于「执行成败」：0=无异常 1=存在 WARN 2=存在 FAIL 3=脚本自身错误。
+        # 原先写成 `if python3 …; then` —— 于是**汇总报告只要有 WARN（很常见）就被判成
+        # 「生成失败，请手动运行」**，即使报告其实已经生成好了。
+        # 2026-10-05 实测踩到：直接跑 ops-report.py 是 exit=1（结论 WARN），
+        # 报告文件正常写出，而月度运维却报了失败。
+        #
+        # 本项目的规矩见 systemd/MEMO.md §5：**退出码表达的是巡检结论，不是服务成败**，
+        # 正因为如此那些单元才写了 `SuccessExitStatus=0 1 2`。这里同理 ——
+        # 只有 3（脚本自身错误）才算真的失败；1/2 是「报告生成了，里面有 WARN/FAIL」。
+        python3 "$OPS_REPORT_SCRIPT" "${args[@]}" --no-color --quiet >/dev/null 2>&1
+        report_rc=$?
+        if (( report_rc <= 2 )); then
+            report_worst="$(jq -r '.worst // "未知"' "$out_json" 2>/dev/null || printf '未知')"
+            ops_ok "apply.report" "汇总报告已生成（结论 ${report_worst}；退出码 ${report_rc} 表示巡检结论，非执行失败）"
             if [[ -n "$out_json" ]]; then
                 jq -r '.findings[]? | "  [\(.level)] \(.check): \(.message)"' "$out_json" 2>/dev/null \
                     | head -n 10 | ops_indent
             fi
         else
-            ops_warn "apply.report" "汇总报告生成失败，请手动运行 python3 $OPS_REPORT_SCRIPT"
+            ops_warn "apply.report" "汇总报告生成失败（退出码 ${report_rc}=脚本自身错误），请手动运行 python3 $OPS_REPORT_SCRIPT"
         fi
         [[ -n "$out_json" ]] && rm -f -- "$out_json" 2>/dev/null
     fi
