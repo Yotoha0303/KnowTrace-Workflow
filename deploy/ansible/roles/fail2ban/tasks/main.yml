@@ -102,10 +102,14 @@
 #   中间还会经过 `/etc/services` 名称解析（默认值 `ssh` 就是这么变成 22 的）。
 #   实测输出形如：`['port', '22345']`。
 - name: 读取 jail 实际生效的 port
+  # ⚠ 两个细节都是 `--check` 预演时抓出来的（别删）：
+  #   1. **不要写 `set -o pipefail`** —— ansible 的 shell 模块默认用 /bin/sh（dash），
+  #      它不认识 `-o pipefail`，会直接 `Illegal option` 失败。
+  #   2. **末尾要 `|| true`** —— grep 找不到时返回 1，会让任务先失败，
+  #      于是下面那条断言（带着可读的 fail_msg）根本没机会跑。
+  #      让 stdout 为空、由断言的第一个条件去报错，报错信息才有用。
   ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      fail2ban-client -d 2>/dev/null | grep -oE "\['port', '[^']*'\]" | head -1
+    cmd: fail2ban-client -d 2>/dev/null | grep -oE "\['port', '[^']*'\]" | head -1 || true
     chdir: /
   register: fail2ban_jail_port
   changed_when: false
