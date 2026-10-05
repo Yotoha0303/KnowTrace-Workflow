@@ -20,6 +20,27 @@
 | `../deploy/systemd/` | ⚠️ **另一组单元在这里，不在本目录** —— 见下方说明 |
 | `ops.conf.example` | 配置模板。**2026-10-05 新增键 `SYSTEMD_FAILED_ALLOWLIST`** —— failed 单元判据的白名单，**缺省为空**（= 任何 failed 都算问题）。每一项都要能说清理由；当前只有 `repass.service`（`INC-S2-003` 判为云厂商控制台救援链路，刻意保留）。**改这个键等于改判据口径**，别为了让列表好看而往里面加 |
 
+### ⚠ 改本目录下**任何**文件之后，记得同步运行时副本
+
+定时器执行的是 **`/opt/knowtrace-ops/`**（不是本目录）。
+那是 `bootstrap.sh` 的 ops 阶段用 `cp -a` 复制出来的**副本**，不是 git 检出 ——
+所以**改本目录的任何文件（含文档）都会让副本分叉，而没有任何提示**。
+
+```bash
+# 判据：两侧应逐字节一致（reports/ 与 __pycache__ 是运行期产物，可忽略）
+diff -rq /opt/knowtrace/scripts/ops/ /opt/knowtrace-ops/ 2>&1 \
+  | grep -vE 'Only in .*(reports|__pycache__)'
+```
+
+**2026-10-05 实测踩到**：改了 `README.md` / `docs/运维脚本使用说明.md` / `systemd/MEMO.md`
+三个**文档**，`/opt/knowtrace` 已 `pull` 到最新，而 `/opt/knowtrace-ops` 里的还是旧的 ——
+**文档本身不影响执行**，但它是同一个分叉机制的表现；换成 `lib/` 下的 `.sh` 就是真的静默回退了
+（见 `systemd/MEMO.md` 与 `KT-GAP-27`）。
+
+**同步方式**：重跑 ops 阶段会整目录 `cp -a`（幂等，安全）；或按上面那几个文件逐个 `install`。
+**注意方向**：`bootstrap.sh` 是**从检出往副本**复制 ——
+如果副本里有尚未进提交的修改，跑一次就会**静默丢掉**。
+
 ### 为什么 systemd 单元分在两处
 
 仓库里有两组 systemd 单元，**不是重复，是由不同的安装器负责**：
