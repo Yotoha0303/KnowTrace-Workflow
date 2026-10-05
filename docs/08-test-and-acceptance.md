@@ -85,7 +85,9 @@ npm test                        # vitest run
 npm run build                   # tsc && vite build
 ```
 
-#### 2.3.1 它的 `lint` 脚本**当前跑不通**（已知，未修）
+#### 2.3.1 它的 `lint` 脚本曾**必然失败**（2026-10-05 已修）
+
+修复前的失败形态：
 
 ```bash
 npm run lint   # ✗ Invalid option '--ext' - perhaps you meant '-c'?
@@ -93,17 +95,39 @@ npm run lint   # ✗ Invalid option '--ext' - perhaps you meant '-c'?
 
 两个独立的原因叠加：
 
-1. `package.json` 里写的是 `eslint . --ext ts,tsx --max-warnings 0`。
-   这条假设的是 **eslintrc 风格**；但仓库根有一个 **flat config `eslint.config.mjs`**，
-   eslint 一旦发现它就走 flat 模式，而 **flat 模式没有 `--ext`** → 报错。
-2. 把 `--ext` 去掉后仍然失败：根 `eslint.config.mjs` 的 `globalIgnores` 里有
-   `services/go-user-system/**`，把整个子树（**包括子目录自己的 `.eslintrc.cjs`**）一并忽略，
-   于是 `eslint .` 找不到任何可检查的文件。
+1. `package.json` 里写的是 `eslint . --ext ts,tsx --max-warnings 0`，
+   假设的是 **eslintrc 风格**；但仓库根有一个 **flat config `eslint.config.mjs`**，
+   eslint 从被 lint 的目录**向上查找**配置文件，一旦发现 flat config 就走 flat 模式，
+   而 **flat 模式移除了 `--ext`** → 报错。
+2. 去掉 `--ext` 也还是不行：根 flat config 的 `globalIgnores` 里有
+   `services/go-user-system/**`，把整棵子树（**包括子目录自己的 `.eslintrc.cjs`**）一并忽略，
+   于是 `eslint .` 报「all of the files matching the glob pattern "." are ignored」。
 
-**所以 CI 里刻意不跑它的 lint** —— 加一道必然失败的门没有意义。
-要修就得先决定：把该前端的规则并进根 flat config，还是让子目录拥有自己的 flat config
-并在门里 `cd` 进去跑。**这是独立的一条缺口，已记入 `01-缺漏台账.md`（`KT-GAP-33`）。**
-**在修好之前，不要**把「`make check` 通过」读成「这个前端也 lint 过了」。
+**修法（采用）**：让子目录**自备一份 flat config**（`eslint.config.mjs`），
+这样 eslint 一进子目录就命中，不再向上走到根配置。`lint` 脚本去掉 `--ext`。
+**不需要新依赖** —— 用到的 `@eslint/js`、`@typescript-eslint/*`、
+`eslint-plugin-react-hooks`、`eslint-plugin-react-refresh`、`globals` 本来就在 devDependencies 里。
+
+```bash
+cd services/go-user-system/frontend && npm run lint   # → exit 0
+```
+
+**两道容易踩的坑（都实测踩过）**：
+
+- **别用 `ESLINT_USE_FLAT_CONFIG=false` 去「修」它**。实测确实能过，但那只是把 eslint
+  推回 eslintrc 模式、继续读那个已被根配置忽略的 `.eslintrc.cjs` ——
+  等于承认「这个子目录在仓库的 lint 体系之外」，与 `KT-GAP-32` 要立的规矩相反。
+- **写 flat config 时不要照搬 `js.configs.recommended` 就完事**。它会把 `no-undef` 打开，
+  而**原来的 `.eslintrc.cjs` 其实是关着它的** —— 因为 `plugin:@typescript-eslint/recommended`
+  会关掉 no-undef（TS 自己就报未定义标识符，ESLint 再报一遍是假阳性）。
+  照搬会凭空多出 **81 个** no-undef 报错（`^KeyboardEvent`、`vi`、`describe`… 全是假阳性）。
+  正确的做法是：`globals: { ...globals.browser, ...globals.node }` + vitest 全局 + `"no-undef": "off"`。
+
+**判据可证伪**（不能只看「现在是绿的」）：往 `src/` 放一个未使用变量，
+`npm run lint` 必须报 `@typescript-eslint/no-unused-vars` 且 **exit 1**；删掉后 **exit 0**。
+
+**现在它进了 CI**（job `auth-frontend` 的一步），并且 `Makefile` 的 `check` /
+`CONTRIBUTING.md` 的提交前验证也含它。所以「`make check` 通过」现在**包含**这个前端的 lint。
 
 
 

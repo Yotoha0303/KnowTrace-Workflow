@@ -42,9 +42,8 @@ auth-test:
 
 # 认证服务的 React 前端。它是 `git subtree` 引入的上游副本，自带 package-lock.json，
 # **不参与根 pnpm workspace**，所以这里用 npm 而不是 pnpm。
-# 不跑它的 lint：`.eslintrc.cjs` 被根的 eslint.config.mjs 的 globalIgnores 遮蔽，跑不通。
 auth-frontend-test:
-	cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm test && npm run build
+	cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm run lint && npm test && npm run build
 
 build:
 	pnpm build
@@ -55,7 +54,7 @@ check:
 	pnpm test
 	pnpm build
 	cd services/go-user-system && go test ./...
-	cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm test && npm run build
+	cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm run lint && npm test && npm run build
 
 backup:
 	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File scripts/backup-all.ps1

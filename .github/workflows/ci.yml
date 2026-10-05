@@ -124,9 +124,12 @@ jobs:
   #
   # 为什么用 npm 而不是 pnpm：该目录是 `git subtree` 引入的上游仓库副本，
   # 自带 `package-lock.json`（376 KB），不参与根 pnpm workspace。
-  # 它自己的 `lint` 脚本**当前跑不通**（详见 `docs/08` §2.3），所以这里**不跑 lint**。
+  #
+  # 2026-10-05：`lint` 修好了，所以本 job 现在也跑它。
+  # 原先它必然失败（`--ext` 撞根 flat config + 根配置忽略整棵子树），
+  # 已改为该目录自带一份 flat config 并去掉 `--ext`（`KT-GAP-33`）。
   auth-frontend:
-    name: Auth frontend (vitest + build)
+    name: Auth frontend (lint + vitest + build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -146,6 +149,9 @@ jobs:
       # 用 npm ci 而不是 install：锁文件在版本控制里，必须是可复现安装。
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
 
       - name: Run unit tests
         run: npm test
