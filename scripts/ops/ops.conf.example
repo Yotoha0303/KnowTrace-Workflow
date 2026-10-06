@@ -197,6 +197,13 @@ THRESHOLD_APT_REBOOT_REQUIRED_WARN=1
 # 文档/运维记录多久没更新算过期（天）
 THRESHOLD_DOC_STALE_DAYS=35
 
+# 自动安全修补（unattended-upgrades）的日志多久没更新算「调度可能停了」（小时）。
+# 它的排班是每天两次（`apt-daily-upgrade.timer`），48h 给了足够余量 ——
+# 若它连着两天没动静，多半不是「恰好没更新」而是坏了。
+# ⚠ 判据的边界：这条只能证明「它按调度在跑、且能跑到结论」，
+# **不证明「当前有 security 更新时它一定会装上」**——那需要一个真实的安全更新来验。
+THRESHOLD_AUTO_UPGRADE_STALE_HOURS=48
+
 # 月度动作的默认开关（命令行 --with-* / --without-* 可覆盖）
 MONTHLY_RESTORE_DRILL=1
 MONTHLY_PRUNE_BACKUPS=1

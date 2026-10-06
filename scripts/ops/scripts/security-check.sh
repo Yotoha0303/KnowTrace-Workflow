@@ -558,11 +558,60 @@ else
     ops_info "security.fail2ban" "未安装 fail2ban（可选加固项，本项目当前未使用）"
 fi
 
-if ops_have_cmd unattended-upgrades || [[ -f /etc/apt/apt.conf.d/20auto-upgrades ]]; then
-    if [[ -r /etc/apt/apt.conf.d/20auto-upgrades ]]; then
-        ops_info "security.auto-upgrades" "自动更新配置: $(tr -d '\n' < /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null || printf 'unknown')"
+# ----------------------------------------------------------------------------
+# 自动安全修补（unattended-upgrades）
+# ----------------------------------------------------------------------------
+# 2026-10-06 之前这里是一条**空转判据**：只把 `20auto-upgrades` 的内容打印成 INFO，
+# **从不断言任何东西**。配置文件在 → 永远记 INFO，哪怕定时器停了、服务关了、
+# 或者它每次启动就崩，日报看起来一模一样。
+#
+# 这正是本项目反复吃亏的形状（`KT-GAP-28` 孤儿指标、`KT-GAP-35` ProtectHome、
+# `KT-GAP-40` fail2ban 端口）：**判据的输入坏了，而输出看起来只是「一切正常」**。
+#
+# 改成真断言，且**区分四种结果** —— 因为「没有可升级的包」是**合法的**结果，
+# 不能与「它根本没跑」混为一谈：
+#   定时器未启用          → FAIL（不会再自动修补了）
+#   日志文件不存在        → FAIL（从没跑过）
+#   日志陈旧（> 阈值）    → WARN（调度停了）
+#   日志有启动但无结论行  → WARN（每次启动就退出，没走到结论）
+#   以上都不成立          → OK（附「最近一次实际升级了多少包」）
+#
+# 判据的**边界（明说）**：它证明「它按调度在跑、且能跑到结论」，
+# **不证明「当前有 security 更新时它一定会装上」** —— 那需要一个真实的安全更新来验，
+# 不能人工造（本项目不制造假的自然事件）。
+if ops_have_cmd systemctl && systemctl list-unit-files unattended-upgrades.service >/dev/null 2>&1; then
+    THRESH_AUTO_UPGRADE_STALE_HOURS="$(ops_conf_int THRESHOLD_AUTO_UPGRADE_STALE_HOURS 48)"
+    auto_log="/var/log/unattended-upgrades/unattended-upgrades.log"
+    auto_timer="apt-daily-upgrade.timer"
+
+    if [[ "$(systemctl is-enabled "$auto_timer" 2>/dev/null || printf 'unknown')" != "enabled" ]]; then
+        ops_fail "security.auto-upgrades" "自动安全修补的定时器 $auto_timer 未启用 —— 不会再自动装安全更新"
+    elif [[ ! -f "$auto_log" ]]; then
+        ops_fail "security.auto-upgrades" "找不到 $auto_log —— unattended-upgrades 从未运行过"
     else
-        ops_info "security.auto-upgrades" "已存在自动更新相关配置"
+        auto_age="$(ops_age_hours "$(ops_mtime "$auto_log")")"
+        auto_starts="$(grep -cF 'Starting unattended upgrades script' "$auto_log" 2>/dev/null || printf 0)"
+        # 两种「跑到结论」的形态：有包要升 / 没有可升的包
+        auto_concl="$(grep -cE 'Packages that will be upgraded:|No packages found that can be upgraded unattended' "$auto_log" 2>/dev/null || printf 0)"
+        [[ "$auto_starts" =~ ^[0-9]+$ ]] || auto_starts=0
+        [[ "$auto_concl" =~ ^[0-9]+$ ]] || auto_concl=0
+
+        if [[ "$auto_age" == "unknown" ]]; then
+            ops_warn "security.auto-upgrades" "读到 $auto_log 但取不到时间戳，无法判断新鲜度"
+        elif awk -v a="$auto_age" -v t="$THRESH_AUTO_UPGRADE_STALE_HOURS" 'BEGIN{exit !(a > t)}'; then
+            ops_warn "security.auto-upgrades" "$auto_timer 已启用，但日志 ${auto_age} 小时未更新（阈值 ${THRESH_AUTO_UPGRADE_STALE_HOURS}h）—— 调度可能停了"
+        elif (( auto_starts == 0 )); then
+            ops_warn "security.auto-upgrades" "日志里没有一次「Starting」记录 —— 单元可能启动即失败"
+        elif (( auto_concl == 0 )); then
+            ops_warn "security.auto-upgrades" "日志有 $auto_starts 次启动，但没有一行结论（既没说有包要升、也没说没有可升的）—— 每次都提前退出了"
+        else
+            last_upgrade="$(grep -E 'Packages that will be upgraded:' "$auto_log" 2>/dev/null | tail -1 || printf '')"
+            if [[ -n "$last_upgrade" ]]; then
+                ops_ok "security.auto-upgrades" "$auto_timer 已启用，日志 ${auto_age} 小时前更新；最近一次实际升级过包"
+            else
+                ops_ok "security.auto-upgrades" "$auto_timer 已启用，日志 ${auto_age} 小时前更新；至今没有需要自动升级的包"
+            fi
+        fi
     fi
 fi
 
