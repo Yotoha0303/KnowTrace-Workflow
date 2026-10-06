@@ -547,15 +547,48 @@ ops_section "8. 可选加固组件"
 
 if ops_have_cmd fail2ban-client; then
     if fail2ban-client status >/dev/null 2>&1; then
-        ops_info "security.fail2ban" "fail2ban 运行中"
+        ops_ok "security.fail2ban" "fail2ban 运行中"
         if [[ "$OPS_QUIET" != "1" ]]; then
             fail2ban-client status sshd 2>/dev/null | ops_indent || true
         fi
     else
-        ops_info "security.fail2ban" "已安装但未运行或无权限读取状态"
+        # 2026-10-06 改：原先是 **INFO**「已安装但未运行或无权限读取状态」——
+        # 也就是说**装了却不跑**这件事无法改变结论，判据只会记一句事实。
+        # 而 fail2ban 现在由 `deploy/ansible/roles/fail2ban` 维护（`enabled: true` + `state: started`），
+        # 装了不跑 = 该 role 没生效，**这是要修的**，不是要记的。
+        ops_fail "security.fail2ban" "已安装但未运行 —— 入侵防护失效（该单元由 ansible role 启用，检查 systemctl status fail2ban）"
     fi
 else
-    ops_info "security.fail2ban" "未安装 fail2ban（可选加固项，本项目当前未使用）"
+    # 原是「未安装 fail2ban（可选加固项，**本项目当前未使用**）」—— 后半句已过时：
+    # 它现在是 ansible role 的一部分。缺装说明 role 没跑完（或被人卸了），记 WARN 让人看一眼。
+    ops_warn "security.fail2ban" "未安装 fail2ban —— 它归 deploy/ansible/roles/fail2ban 管理，缺装说明该 role 未生效"
+fi
+
+# ----------------------------------------------------------------------------
+# fail2ban 的封禁规则是否命中 sshd 真实端口
+# ----------------------------------------------------------------------------
+# 2026-10-06 新增（`KT-GAP-40`）。nftables 的 action 会把 jail 的 `port` 写进规则本身：
+#     tcp dport <port> ip saddr @addr-set-sshd reject
+# 而 jail **不配 port 时默认解析为 `ssh` → 22**，本机 sshd 在 22345 ——
+# 于是规则落在**没有监听者的端口**上：整条链一条都拦不到，
+# 而 jail 显示 active、`Total banned` 会 +1、`nft` 里 set 有元素、**日志无任何报错**。
+#
+# 判据必须读 **`fail2ban-client -d` 里实际生效的 port**（不是配置文件）——
+# 中间隔着 `/etc/services` 的名称解析（默认值 `ssh` 就是这么变成 22 的）。
+# 这条与 ansible role 里那条断言是同一件事的**两侧**：
+# role 管「装的时候对」，这里管「运行时没被改坏」。
+if ops_have_cmd fail2ban-client && fail2ban-client status >/dev/null 2>&1; then
+    fb_ssh_port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || printf '')"
+    fb_jail_port="$(fail2ban-client -d 2>/dev/null | grep -oE "\['port', '[^']*'\]" | head -1 || printf '')"
+    if [[ -z "$fb_jail_port" ]]; then
+        ops_info "security.fail2ban-port" "读不到 jail 的 port 定义，跳过端口一致性检查"
+    elif [[ -z "$fb_ssh_port" ]]; then
+        ops_info "security.fail2ban-port" "读不到 sshd 实际端口（sshd -T 不可用），跳过"
+    elif [[ "$fb_jail_port" == *"'$fb_ssh_port'"* ]]; then
+        ops_ok "security.fail2ban-port" "封禁规则的端口命中 sshd 真实端口（$fb_ssh_port）"
+    else
+        ops_fail "security.fail2ban-port" "jail 的 port（$fb_jail_port）与 sshd 实际端口（$fb_ssh_port）不符 —— nftables 的封禁规则会落在没人监听的端口上，**整条链一条都不拦**"
+    fi
 fi
 
 # ----------------------------------------------------------------------------
