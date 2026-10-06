@@ -155,6 +155,48 @@ fi
 
 echo "RESULT=PASS"
 
+# ---- 3b. 判定**触发方式**（可验证，不猜）-----------------------------------
+# 为什么需要：这份记录要回答「是按计划自然发生的，还是人工跑的一次」——
+# 十环的判据只在自然发生时才成立。原先这里硬编码写「人工触发」，
+# 而 2026-10-05 20:31:06 那次其实是**定时器**触发的（`OnCalendar=Mon 20:30 UTC`）
+# ⇒ **记录在本可以证伪的地方说了假话**（与 KT-GAP-41 是同一形状：
+# 产物断言了一个它并不知道的成因）。
+#
+# 判据用两个**可查的真实时间**比对：
+#   * 本服务的 ExecMainStartTimestamp（它什么时候起来的）
+#   * 定时器的 LastTriggerUSec（定时器最后一次触发）
+# 两者相差在一分钟量级 ⇒ 是定时器触发的；相差很大（例如几天）⇒ 人工跑的。
+# 这不是推断，是读 systemd 自己的记录。
+trigger_label="未判定"
+timer_unit="knowtrace-workflow-alert-drill.timer"
+svc_start_raw="$(systemctl show knowtrace-workflow-alert-drill.service -p ExecMainStartTimestamp --value 2>/dev/null)"
+timer_last_raw="$(systemctl show "$timer_unit" -p LastTriggerUSec --value 2>/dev/null)"
+if [[ -n "$svc_start_raw" && -n "$timer_last_raw" && "$timer_last_raw" != "n/a" ]]; then
+  svc_epoch="$(date -d "$svc_start_raw" +%s 2>/dev/null || echo "")"
+  timer_epoch="$(date -d "$timer_last_raw" +%s 2>/dev/null || echo "")"
+  if [[ -n "$svc_epoch" && -n "$timer_epoch" ]]; then
+    delta=$(( svc_epoch - timer_epoch )); (( delta < 0 )) && delta=$(( -delta ))
+    if (( delta <= 120 )); then
+      trigger_label="**自然触发**（定时器 \`$timer_unit\`；相差 ${delta}s）"
+    else
+      # 单位按量级给 —— 固定写「天」会在几分钟量级时印出「约 0 天」，读不出信息。
+      if (( delta >= 86400 )); then
+        human_delta="$(( delta / 86400 )) 天"
+      elif (( delta >= 3600 )); then
+        human_delta="$(( delta / 3600 )) 小时"
+      else
+        human_delta="${delta} 秒"
+      fi
+      trigger_label="**人工触发**（非定时器；与服务启动相差 $human_delta）"
+    fi
+  fi
+fi
+if [[ "$trigger_label" == "未判定" ]]; then
+  # 读不到就如实说读不到 —— 不要退回硬编码，那正是本次要修掉的毛病。
+  trigger_label="**未判定**（读不到 systemd 时间戳；请查 \`journalctl -u $timer_unit\`）"
+fi
+echo "TRIGGER=$trigger_label"
+
 # ---- 4. 落一份记录（判据要落在能复查的文件上，不能只在终端回滚里）----------
 # 文件名带时间戳，与 daily-ops / weekly-check 的报告同风格：**每次运行各留一份**，
 # 不覆盖历史——「证明它发生过」的证据不应该被下一次运行冲掉。
@@ -162,8 +204,9 @@ record_path="$record_directory/alert-delivery-drill-$(date -u +%Y%m%dT%H%M%SZ).m
 cat >"$record_path" <<RECORD
 # 告警送达演练记录
 
-- 执行方式：**人工触发**（\`scripts/linux/verify-alert-delivery-drill.sh\`），
-  非定时器 / CI 自然发生。它证明**链路可跑通**，不证明「没人看着时也会跑」。
+- 执行方式：$trigger_label。
+  判定依据是 systemd 的两个真实时间戳（服务 `ExecMainStartTimestamp` 与
+  定时器 `LastTriggerUSec`），**不是脚本自己声明的** —— 见下方「复算」。
 - 结论：**RESULT=PASS**
 - 时间：\`$started_at\` → \`$finished_at\`（UTC）
 
@@ -204,6 +247,9 @@ curl -s localhost:9093/metrics | grep '^alertmanager_notifications_total{integra
 ls -t /var/log/knowtrace-observability-drill-*.log | head -1
 # 本目录下的历次记录
 ls -t /var/lib/knowtrace/reports/alert-delivery-drill-*.md | head
+# 触发方式（两个时间戳比对，本记录就是这么判的）
+systemctl show knowtrace-workflow-alert-drill.service -p ExecMainStartTimestamp --value
+systemctl show knowtrace-workflow-alert-drill.timer   -p LastTriggerUSec --value
 # 重跑
 DRILL_HOLD_SECONDS=$hold_seconds bash scripts/linux/verify-alert-delivery-drill.sh
 \`\`\`
@@ -212,7 +258,11 @@ DRILL_HOLD_SECONDS=$hold_seconds bash scripts/linux/verify-alert-delivery-drill.
 
 - **收件箱里是否看到**：计数只证明 AM 递交给 SMTP 成功，不证明 163 收下。
   那一步只能落在收件箱上（见 \`运维手册.md\` §7.5）。
-- **自然发生**：本记录是人工触发。要证明「调度会跑」，需把它接进定时器 —— 目前没有。
+- **收件箱里是否看到**：同上 —— 本判据只到 SMTP 递交。
+- （2026-10-05 更正）本节原写「要证明调度会跑，需把它接进定时器 —— 目前没有」。
+  **定时器已于 2026-10-05 接上**（`KT-GAP-38`，`Mon 20:30 UTC`），
+  首次自然触发即 2026-10-05 20:31:06 —— 而原先的记录头仍硬编码写着「人工触发」，
+  与事实相反。现已改为读 systemd 时间戳判定。
 RECORD
 
 echo "RECORD=$record_path"
