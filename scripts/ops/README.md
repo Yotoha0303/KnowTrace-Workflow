@@ -15,6 +15,7 @@
 | `scripts/ops-report.py` | 被 monthly 调用：多期报告汇总、巡检闭环新鲜度 |
 | `scripts/cert_check.py` | 被 weekly 调用：TLS 证书有效期与链校验 |
 | `scripts/security-check.sh` | 被 weekly 调用：异常登录与端口合规 |
+| `scripts/server_health_check.sh` | **自包含单文件**巡检（不依赖 `lib/`）：内存/Swap+OOM 历史、根分区+inode、ESTABLISHED 外联+非标/管理端口、SSH 爆破 Top5、Caddy/后端服务与容器健康。带 `--self-test` 负向证伪自检。**不进告警链路**，用于救援/对照/新机摸底 |
 | `lib/` | Bash 与 Python 公共库，两个日巡检脚本都依赖。**2026-10-05 起含 `ops_systemd_check()`**（关键服务 / 备份定时器 / failed 单元白名单）与 `mon.textfile` 判据 —— 放在这里是因为 `daily-check.sh` **没有定时器**，判据必须落在真会跑的脚本上 |
 | `systemd/` | 6 个定时任务单元 + [`MEMO.md`](systemd/MEMO.md)（安装/回滚/退出码语义/踩过的坑）。**2026-09-28 已安装并 enable** |
 | `../deploy/systemd/` | ⚠️ **另一组单元在这里，不在本目录** —— 见下方说明 |
@@ -76,6 +77,24 @@ diff -rq /opt/knowtrace/scripts/ops/ /opt/knowtrace-ops/ 2>&1 \
 
 两者可以并存，报告都写进 `ops.conf` 的 `REPORTS_DIR`（`/var/lib/knowtrace/reports`）。
 如果没有特别需要，**建议只挂一个**，避免同一目录下出现两套日巡检报告。
+
+## server_health_check.sh 与其它脚本的分工
+
+`server_health_check.sh` 是**自包含单文件**，刻意**不** `source lib/ops-common.sh`：
+
+| | 体系化脚本（daily-ops / weekly-check …） | `server_health_check.sh` |
+| --- | --- | --- |
+| 依赖 | `lib/`、`ops.conf` | 无（纯 Bash + coreutils） |
+| 产出 | JSON/Markdown 报告 → 告警链路 | 控制台 + 追加日志（`/var/log/health_check.log`） |
+| 用途 | **常态化机制**（定时器驱动） | 救援环境 / 对照排查 / 新机器摸底 |
+| 可移植 | 需整套工具包 | 单文件拷走即可跑 |
+
+**判据口径刻意保持一致**（同一套四级结论与四档退出码），所以两边结论可以直接对照，
+不会出现「一个说 OK 一个说 FAIL」的口径分裂。`ops.conf` 若存在会被读取（只读），
+且**环境变量优先于配置文件**，便于 cron/systemd 用 `Environment=` 覆盖而不改文件。
+
+它带一个 `--self-test`：注入假故障后断言判据必定报警。**这是判据本身的可证伪性检验**，
+不是「脚本能跑通」的检验 —— 两者必须分清。
 
 ## 结论分级与退出码
 
