@@ -1,0 +1,241 @@
+name: Auth E2E Repeat
+
+# ============================================================================
+# 只为**复现认证态 e2e 的抖动**而存在（`KT-GAP-53`）
+# ============================================================================
+#
+# 为什么单独一个 workflow，而不是加进 ci.yml：
+#   * `ci.yml` 每次 push 都跑，而这个要**连跑 N 次** —— 放进 CI 会拖慢每次推送；
+#   * 它的产物是**诊断证据**（失败率 + 干净的单次失败 trace），不是门。
+#     门是 `ci.yml` 里那条；这条是**给门做体检**的。
+#
+# 判据（`KT-GAP-53` 的验收）：
+#   **连续 N 次「有认证」那步在 `retries=1` 下不触发重试**。
+#   脚本会统计每个 spec 的 `flaky` 计数（Playwright 对「重试后才过」的标记），
+#   **有 flaky 就算没过** —— 因为它证明抖动仍在。
+#
+# 用法：
+#   Actions → Auth E2E Repeat → Run workflow（可改 repeat 次数）
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: "连跑几次（判据建议 ≥ 5）"
+        required: false
+        default: "5"
+  # 排班留空：这是**诊断/体检**用的，不该在没有明确意图时自动烧 CI 额度。
+  # 要变成「自然发生」，把下面两行取消注释即可（每周一 21:00 UTC，在 weekly-check 之后）。
+  # schedule:
+  #   - cron: "0 21 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: 认证态 e2e × N
+    runs-on: ubuntu-latest
+    # N × 约 3 分钟（build + 4 spec）+ 起栈开销；给足余量
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: knowtrace
+          POSTGRES_USER: knowtrace
+          POSTGRES_PASSWORD: knowtrace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowtrace -d knowtrace"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: knowtrace-root
+          MYSQL_DATABASE: go_user_system
+          MYSQL_USER: go_user_system
+          MYSQL_PASSWORD: knowtrace
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      DATABASE_URL: postgres://knowtrace:knowtrace@localhost:5432/knowtrace
+      AI_DEFAULT_PROVIDER: mock
+      KNOWTRACE_ADMIN_USERNAME: CiAdmin
+      KNOWTRACE_ADMIN_PASSWORD: CiAdmin@Passw0rd-2026
+      REPEAT: ${{ inputs.repeat || '5' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations to an empty database
+        run: pnpm db:migrate
+
+      - name: Migrate the authentication database
+        working-directory: services/go-user-system
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+        run: go run ./cmd migrate up
+
+      - name: Seed the end-to-end administrator
+        working-directory: services/go-user-system
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+        run: |
+          BOOTSTRAP_ADMIN_USERNAME="$KNOWTRACE_ADMIN_USERNAME" \
+          BOOTSTRAP_ADMIN_PASSWORD="$KNOWTRACE_ADMIN_PASSWORD" \
+          go run ./cmd bootstrap-admin-if-needed
+
+      # 与 ci.yml 同一处理：账号级限流是 config.yml 的硬值、无环境变量覆盖，
+      # 而本 workflow 要跑 N 次 × 4 spec × (1 + 重试) 次登录 —— 必须放宽，
+      # 否则量到的是限流，不是抖动。改的是运行目录副本，源文件不动。
+      - name: Raise the login rate limit for this run
+        working-directory: services/go-user-system
+        run: |
+          sed -i 's/^    accountLimit: 5$/    accountLimit: 500/; s/^    ipLimit: 20$/    ipLimit: 1000/' config.yml
+          grep -A3 '^  loginRateLimit:' config.yml
+
+      - name: Start the authentication service
+        working-directory: services/go-user-system
+        env:
+          APP_ENV: development
+          APP_PORT: "8082"
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: root
+          DB_PASSWORD: knowtrace-root
+          DB_NAME: go_user_system
+          JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
+          REGISTRATION_ENABLED: "false"
+          REDIS_ENABLED: "false"
+          COOKIE_SECURE: "false"
+        run: |
+          go build -o /tmp/knowtrace-auth ./cmd
+          nohup /tmp/knowtrace-auth > /tmp/knowtrace-auth.log 2>&1 &
+          echo $! > /tmp/knowtrace-auth.pid
+          for attempt in $(seq 1 60); do
+            if curl -fsS -m 2 http://127.0.0.1:8082/readyz >/dev/null 2>&1; then
+              echo "认证服务就绪（第 ${attempt} 次探测）"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "认证服务在 60 秒内没有就绪 —— 日志："
+          cat /tmp/knowtrace-auth.log
+          exit 1
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      # 只跑「有认证」那一半 —— 抖动就在那里，没必要把无认证那 19 个也跑 N 次。
+      #
+      # `PLAYWRIGHT_PORT` 每次都换：`reuseExistingServer: false` 已保证不复用，
+      # 但换端口能顺带确认「不是某个端口上的残留进程」在捣乱。
+      # 每次用**独立的 report 目录**，失败时能逐个定位是哪一轮。
+      - name: Repeat the authenticated suite N times
+        env:
+          AUTH_ENABLED: "true"
+          AUTH_SERVICE_URL: http://127.0.0.1:8082
+          AUTH_REGISTRATION_ENABLED: "false"
+          AUTH_COOKIE_SECURE: "false"
+          AUTH_E2E_USERNAME: CiAdmin
+          AUTH_E2E_PASSWORD: CiAdmin@Passw0rd-2026
+        run: |
+          set -uo pipefail
+          # ⚠ 摘要与逐轮日志写在**工作区内**（不是 /tmp）：
+          # `actions/upload-artifact@v4` **不允许工作区外的绝对路径**。
+          out="auth-e2e-repeat"
+          mkdir -p "$out"
+          pass=0; fail=0; flaky_total=0
+          echo "run,exit,passed,failed,flaky" > "$out/summary.csv"
+          for i in $(seq 1 "$REPEAT"); do
+            port=$((3100 + i))
+            echo "=========== 第 ${i}/${REPEAT} 次（port ${port}）==========="
+            PLAYWRIGHT_PORT="$port" \
+            PLAYWRIGHT_HTML_REPORT="playwright-repeat-${i}" \
+              pnpm exec playwright test --config playwright.auth.config.ts 2>&1 | tee "$out/run-${i}.log"
+            rc=${PIPESTATUS[0]}
+            # Playwright 的 list reporter 在末行给人读的计数；抓出来做 CSV。
+            # `flaky` 是关键 —— 「重试后才过」证明抖动仍在，要算没过。
+            passed=$(grep -oE '[0-9]+ passed' "$out/run-${i}.log" | tail -1 | grep -oE '[0-9]+' || echo 0)
+            failed=$(grep -oE '[0-9]+ failed' "$out/run-${i}.log" | tail -1 | grep -oE '[0-9]+' || echo 0)
+            flaky=$(grep -oE '[0-9]+ flaky' "$out/run-${i}.log" | tail -1 | grep -oE '[0-9]+' || echo 0)
+            echo "${i},${rc},${passed},${failed},${flaky}" >> "$out/summary.csv"
+            if (( rc == 0 && flaky == 0 )); then pass=$((pass+1)); else fail=$((fail+1)); fi
+            flaky_total=$((flaky_total+flaky))
+          done
+          echo
+          echo "==================== 汇总 ===================="
+          cat "$out/summary.csv"
+          echo "干净通过 ${pass} / 有问题 ${fail}（含重试才过）/ 累计 flaky ${flaky_total}"
+          {
+            echo "repeat=${REPEAT}"
+            echo "clean_pass=${pass}"
+            echo "problem=${fail}"
+            echo "flaky_total=${flaky_total}"
+          } > "$out/result.txt"
+          cat "$out/result.txt"
+          # 判据：**全部干净通过**才算过。有 flaky 也算不过 —— 抖动仍在。
+          if (( fail > 0 )); then
+            echo "RESULT=FAIL（有 ${fail} 次不干净）"
+            exit 1
+          fi
+          echo "RESULT=PASS（${REPEAT} 次全部干净，无 flaky）"
+
+      # 认证服务日志：与 ci.yml 不同，这里**成功时也留**——
+      # 目的是诊断，日志本身就是证据，不能只在失败时才有。
+      - name: Print authentication service log
+        if: always()
+        run: cat /tmp/knowtrace-auth.log || true
+
+      - name: Upload repeat summary and per-run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-e2e-repeat-summary
+          path: auth-e2e-repeat/
+          retention-days: 14
+
+      # 每次运行的 trace 都留（不只失败的）—— 要对比「干净的一次」与「抖的一次」。
+      - name: Upload Playwright traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-e2e-repeat-traces
+          path: playwright-repeat-*/
+          retention-days: 14

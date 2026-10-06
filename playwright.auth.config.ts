@@ -66,7 +66,14 @@ export default defineConfig({
   // ⚠ 边界（别把 retries 当万能）：它只吸收**偶发**。若这条门变成**经常**需要重试，
   //   那说明有真问题（登录时延、种子账号、限流），要回去查根因，而不是继续加 retries。
   retries: 1,
-  reporter: [["list"], ["html", { outputFolder: "playwright-report-auth", open: "never" }]],
+  // 报告目录可由环境变量覆盖。
+  // 为什么需要：`auth-e2e-repeat.yml` 要连跑 N 次、**每轮一份独立报告** ——
+  // 否则后一轮会覆盖前一轮，抖的那一轮就没法单独看了（`KT-GAP-53`）。
+  // 默认值保持不变，所以 `ci.yml` 那条路径的行为与改动前完全一致。
+  reporter: [
+    ["list"],
+    ["html", { outputFolder: process.env.PLAYWRIGHT_HTML_REPORT ?? "playwright-report-auth", open: "never" }],
+  ],
   expect: { timeout: 15_000 },
   use: {
     baseURL,

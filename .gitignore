@@ -4,6 +4,9 @@ out/
 coverage/
 playwright-report/
 playwright-report-auth/
+# auth-e2e-repeat.yml 的逐轮报告与摘要（诊断产物，不该入库）
+playwright-repeat-*/
+auth-e2e-repeat/
 test-results/
 backups/
 .env
