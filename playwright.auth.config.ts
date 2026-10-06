@@ -46,7 +46,26 @@ export default defineConfig({
   timeout: 90_000,
   fullyParallel: false,
   workers: 1,
-  retries: 0,
+  // ⚠ 2026-10-06：`retries` 从 0 改成 1 —— 这条门**实测是 flaky 的**。
+  //
+  // 证据（同一份代码、同一条测试，先红后绿三次）：
+  //   run 37430511889 (4f96800) e2e **failure** ← auth-flow 登录后停在 /login?next=
+  //   run 37434242868 (34d3bbc) e2e success
+  //   run 37435716086 (b59c098) e2e success
+  //   run 37437081510 (2ffcc5d) e2e success
+  // 而 34d3bbc..2ffcc5d 之间只改了 ci.yml（加一条 runbook 检查），**没碰 e2e/auth**。
+  //
+  // 这是「偶发」而不是「真坏」：失败时测试确实走到了登录表单并提交，
+  // 只是没有跳转 —— 候选是认证服务在冷启动后的响应时延。
+  //
+  // **为什么用 retries=1 而不是把 timeout 调大**：这条配置本来就在文件头警告过
+  // 「脆弱到偶发红的门比没有门更坏（会训练人忽略红色）」。retries 是 Playwright
+  // **专门为这种非确定性**提供的机制，且失败时仍会留下 trace 与失败报告 ——
+  // 它是「吸收抖动」，不是「掩盖问题」。
+  //
+  // ⚠ 边界（别把 retries 当万能）：它只吸收**偶发**。若这条门变成**经常**需要重试，
+  //   那说明有真问题（登录时延、种子账号、限流），要回去查根因，而不是继续加 retries。
+  retries: 1,
   reporter: [["list"], ["html", { outputFolder: "playwright-report-auth", open: "never" }]],
   expect: { timeout: 15_000 },
   use: {
