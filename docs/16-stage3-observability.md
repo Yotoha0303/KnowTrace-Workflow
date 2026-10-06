@@ -420,7 +420,7 @@ cat /opt/knowtrace/runtime/node-exporter/knowtrace-ops.prom
 **指标写失败时巡检报告仍然正常**——别只看到报告就说链路没问题，要
 `cat` 一下 `.prom` 文件确认指标真的写出来了。
 
-### 运行态版本核对
+### Revision
 
 `knowtrace.revision` 组的指标由 `scripts/linux/write-revision-metrics.sh` 写入，
 由 `knowtrace-workflow-daily-ops.service` 的第二个 `ExecStartPost` 调用；

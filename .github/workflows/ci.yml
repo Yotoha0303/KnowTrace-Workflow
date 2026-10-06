@@ -64,6 +64,15 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # 告警规则里的 `runbook:` 锚点必须能在目标文档里解析。
+      # 规则与文档都在仓库里、是静态文件 —— 所以这个断言属于 CI，
+      # 不需要服务器、不需要运行时，每次 push 自然发生。
+      # 背景：告警响时人会点那个链接；锚点解析不到时**没有任何东西会报错**
+      # （Prometheus 照样加载、告警照样 firing、health 照样 ok）。
+      # 2026-10-06 实测抓到过一个：`#revision` 对不上中文标题的 slug。
+      - name: Check alert runbook anchors
+        run: node scripts/check-runbook-anchors.mjs
+
       - name: Run unit tests
         run: pnpm test
 
