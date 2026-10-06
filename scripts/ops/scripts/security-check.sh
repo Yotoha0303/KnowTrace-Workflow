@@ -285,7 +285,16 @@ ops_section "3. 公网监听与防火墙"
 
 if ops_have_cmd ss; then
     listeners="$(ss -lntH 2>/dev/null | awk '{print $4}' | sort -u || printf '')"
-    non_local="$(printf '%s\n' "$listeners" | grep -vE '^(127\.0\.0\.1|\[::1\]|::1)[:. ]' | grep -v '^$' || printf '')"
+    # ⚠ 排除的是**整个回环网段**，不是只有 127.0.0.1。
+    #    2026-10-06 实测踩到：原正则只匹配 `127.0.0.1`，而 systemd-resolved
+    #    正常绑定在 `127.0.0.53`（stub listener）与 `127.0.0.54` ——
+    #    这两个**都在回环内**（RFC 1122：127.0.0.0/8 全段保留给回环），
+    #    外部**根本连不上**（实测 `Connection refused`），却被判成「非本地监听」
+    #    并让 weekly 每次都报一条 WARN。判据的假阳性会训练人忽略 WARN。
+    #    匹配写法兼顾 ss 的几种输出形态：`127.0.0.53%lo:53`、`127.0.0.1:8080`、`[::1]:80`。
+    non_local="$(printf '%s\n' "$listeners" \
+        | grep -vE '^(127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\]|::1)[:%]' \
+        | grep -v '^$' || printf '')"
 
     if [[ -n "$non_local" ]]; then
         ops_fact "非本地监听地址（需确认都在预期内）:"
