@@ -162,7 +162,29 @@ jobs:
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
+      # ---- 先跑一遍**无认证**套件：复刻 ci.yml 的序列 -------------------------
+      #
+      # 为什么必须复刻：`auth-e2e-repeat` 第一次跑（run 37481273889）是
+      # **5/5 干净、零 flaky**，而 `ci.yml` 里同一个套件约 11% 挂。
+      # 两者有一处结构差别：
+      #
+      #   ci.yml     ：**先跑无认证套件（19 spec）**，再跑认证套件
+      #   本 workflow：**只跑认证套件**
+      #
+      # 所以「抖动」很可能不是 `auth-flow` 自己不稳，而是
+      # **「在无认证套件跑过之后」那条路径不稳**（认证服务已被命中过、
+      # 浏览器/服务已预热过 45 秒 +）。
+      #
+      # 顺带排除了一个**被证伪**的假设：第一次跑时轮次用时差 3 倍
+      # （45s vs 14s），看起来像「第一轮慢」，但逐用例耗时两次都是 1–2 秒 ——
+      # 那 30 秒全在构建（冷/热），**测试本身没变慢**。
+      - name: Warm-up run (unauthenticated suite, mirrors ci.yml)
+        env:
+          AUTH_ENABLED: "false"
+        run: pnpm test:e2e
+
       # 只跑「有认证」那一半 —— 抖动就在那里，没必要把无认证那 19 个也跑 N 次。
+      # （上面的 warm-up 已经把它们跑过一遍，这里只借它复刻 ci.yml 的序列。）
       #
       # `PLAYWRIGHT_PORT` 每次都换：`reuseExistingServer: false` 已保证不复用，
       # 但换端口能顺带确认「不是某个端口上的残留进程」在捣乱。
