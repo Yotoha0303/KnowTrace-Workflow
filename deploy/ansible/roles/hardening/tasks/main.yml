@@ -184,3 +184,82 @@
     label: "{{ item.item.key }}"
   # 后置条件：预演时 sysctl 还没应用，跑了必然假失败
   when: not ansible_check_mode
+
+# ---------------------------------------------------------------------------
+# MTA（postfix）监听面收敛
+# ---------------------------------------------------------------------------
+# 2026-10-06 实测：weekly 一直报 `net.public-listeners ... 25 53`。
+# 拆开看是两个不同的东西：
+#   * **53 是判据假阳性** —— systemd-resolved 绑在 127.0.0.53/54（都在回环内），
+#     已在 `scripts/ops/scripts/security-check.sh` 修正（排除整段 127.0.0.0/8）。
+#   * **25 是真的** —— postfix 当时监听 `0.0.0.0:25`（`inet_interfaces = all`）。
+#
+# postfix 是**连带装上**的，不在 `baseline_packages` 里：
+#     apt-get install -y rkhunter → Recommends: bsd-mailx → 依赖 default-mta → postfix
+# 装上就 `enabled` + `active`，于是**每台新机器都会自动多一个 0.0.0.0:25**，
+# 而没有人做过「要不要跑 mail server」这个决定。
+#
+# 它并非无用（cron / systemd 的报错要靠它投到本地邮箱），所以**不禁用、不卸载**，
+# 只把监听面收到回环。实测改完：25 只绑 `127.0.0.1` 与 `[::1]`，
+# 本地投递仍正常（`mail -s test root` 进 `/var/mail/root`）。
+#
+# ⚠ UFW 本来就没放行 25，所以外部此前也进不来 —— 这一步是**纵深防御**，
+#   不是堵一个已开的洞。但「不在允许清单里的服务在 0.0.0.0 上监听」本身就该消掉：
+#   它依赖 UFW 一直配得对，而 UFW 规则**重装即丢**（本项目踩过）。
+#
+# 下面还加了一条**通用断言**：非回环监听端口只允许 80 / 443 / ssh_port。
+# 它把这条规则从「这一次我顺手改了 postfix」升级成「以后任何新服务想占公网端口都得先过这一关」。
+- name: 确认 postfix 是否在跑（连带装上的 MTA）
+  ansible.builtin.command:
+    cmd: systemctl is-active postfix
+  register: hardening_postfix_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: 把 MTA 的监听面收敛到回环
+  # 只在 postfix 存在且在跑时动手；没装就跳过（它只是 rkhunter 的连带物，不是必需）
+  when:
+    - hardening_postfix_active.stdout | default('') | trim == "active"
+    - not ansible_check_mode
+  block:
+    - name: 读取当前 inet_interfaces
+      ansible.builtin.command:
+        cmd: postconf -h inet_interfaces
+      register: hardening_postfix_interfaces
+      changed_when: false
+
+    - name: 设为 loopback-only
+      ansible.builtin.command:
+        cmd: postconf -e "inet_interfaces = loopback-only"
+      when: hardening_postfix_interfaces.stdout | trim != "loopback-only"
+      register: hardening_postfix_changed
+
+    - name: 重启 postfix 使配置生效
+      ansible.builtin.systemd_service:
+        name: postfix
+        state: restarted
+      when: hardening_postfix_changed is changed
+
+- name: 读取非回环监听端口
+  ansible.builtin.shell:
+    cmd: >-
+      ss -lntH 2>/dev/null | awk '{print $4}' | sort -u
+      | grep -vE '^(127\.[0-9]+\.[0-9]+\.[0-9]+|\[::1\]|::1)[:%]'
+      | grep -oE '[0-9]+$' | sort -un | tr '\n' ' ' || true
+  register: hardening_listen_ports
+  changed_when: false
+  # 后置条件：预演时还没收敛监听面，跑了必然假失败（与上面 sysctl 那条同理）
+  when: not ansible_check_mode
+
+- name: 断言非回环监听端口只有 80 / 443 / ssh_port
+  ansible.builtin.assert:
+    that:
+      - (hardening_listen_ports.stdout | default('')).split()
+        | difference(['80', '443', ssh_port | string]) | length == 0
+    fail_msg: >-
+      非回环监听端口里出现了预期外的项：{{ hardening_listen_ports.stdout | default('(空)') }}
+      （期望只有 80 / 443 / {{ ssh_port }}）。
+      先 `ss -tlnp` 看是谁在监听，再决定「收监听面」还是「补进允许清单」。
+    success_msg: "非回环监听端口 = {{ hardening_listen_ports.stdout | default('(空)') }}（只有 80 / 443 / {{ ssh_port }}）"
+  when: not ansible_check_mode
