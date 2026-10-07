@@ -170,11 +170,18 @@ hc_load_conf() {
 #   自检里的 HC_AUTH_LOG 等设置会被静默忽略，于是自检「看起来在测」，
 #   实际测的是真机的 /var/log/auth.log（不存在 → 静默降级成 INFO），
 #   判据于是永远不会报警。这正是本项目最贵的那类故障：检查器悄悄失效。
+#
+# ⚠️ 「显式设为空」必须算**已设置**，不能回落到配置文件（2026-10-07 真机踩到）：
+#   原先判据是 `-n "${!key}"`，它把「没设」和「设成了空串」当成同一件事。
+#   于是 `SYSTEMD_FAILED_ALLOWLIST=`（本意是「没有白名单」）会**静默回落**到
+#   /etc/knowtrace/ops.conf 里的 `repass.service` —— 用户明确要求「清空白名单」，
+#   脚本却照旧用白名单，且**毫无提示**。这与上面那条是同一族缺陷。
+#   现在改为只判 `${!key+set}`（设没设），空串是一个**有意义的取值**，照用。
 hc_conf_get() {
     local key="$1" fallback="${2-}"
-    if [[ -n "${!key+set}" && -n "${!key}" ]]; then
+    if [[ -n "${!key+set}" ]]; then
         printf '%s' "${!key}"
-    elif [[ -n "${hc_conf_values[$key]+set}" && -n "${hc_conf_values[$key]}" ]]; then
+    elif [[ -n "${hc_conf_values[$key]+set}" ]]; then
         printf '%s' "${hc_conf_values[$key]}"
     else
         printf '%s' "$fallback"
