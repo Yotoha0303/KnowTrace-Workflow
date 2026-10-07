@@ -1,0 +1,18 @@
+[Unit]
+Description=每天执行 KnowTrace-Workflow 单机轻量巡检 (server_health_check)
+
+[Timer]
+# 为什么排在 20:10 UTC 而不是跟 daily-ops(19:30) 同一时刻：
+#   ① 拉开距离，避免两个巡检同时抢 CPU/磁盘 IO（这台机器是 2vCPU/1.8G，稀缺）；
+#   ② 排在 backup(19:21) 与 daily-ops(19:30) **之后**，这样它看到的是当天
+#      已完成的备份与已刷新的日志，读数与日报可比对（同一时刻的横截面）。
+OnCalendar=*-*-* 20:10:00 UTC
+# Persistent=true：机器在触发时刻是关机/维护状态时，开机后补跑一次，
+# 不会漏掉当天的记录。注意：补跑**不算「自然发生」**（本项目对判据的定义见
+# 十环补齐/README.md）—— 那一条要求的是一次按排班的真实触发。
+Persistent=true
+# 随机偏移，避免和其它定时任务/整点 cron 撞在一起
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

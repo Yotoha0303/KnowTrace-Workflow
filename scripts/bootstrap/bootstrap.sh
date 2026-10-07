@@ -265,7 +265,7 @@ b_stage_ops() {
 
   if [[ "$BOOTSTRAP_DRY_RUN" == true ]]; then
     b_info "(dry-run) install -d -m 700 /etc/knowtrace"
-    b_info "(dry-run) cp -a scripts/ops/{lib,scripts,systemd,docs,ops.conf.example} $ops_root/"
+    b_info "(dry-run) cp -a scripts/ops/{lib,scripts,systemd,docs,logrotate,ops.conf.example} $ops_root/"
     b_info "(dry-run) bash $ops_root/systemd/install.sh --source $ops_root/systemd"
     return 0
   fi
@@ -281,7 +281,7 @@ b_stage_ops() {
   install -d -m 700 /etc/knowtrace
   # cp -a 而不是 cp -r：cp -r 不修正已存在目标的权限位，
   # 某文件第一次以错误模式拷进去后每次重拷都不会自愈（见 09-29 文档 N3）。
-  cp -a scripts/ops/lib scripts/ops/scripts scripts/ops/systemd scripts/ops/docs scripts/ops/ops.conf.example "$ops_root/"
+  cp -a scripts/ops/lib scripts/ops/scripts scripts/ops/systemd scripts/ops/docs scripts/ops/logrotate scripts/ops/ops.conf.example "$ops_root/"
   b_ok "工具包已同步到 $ops_root"
 
   if [[ ! -f "$conf" ]]; then

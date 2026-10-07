@@ -17,7 +17,8 @@
 | `scripts/security-check.sh` | 被 weekly 调用：异常登录与端口合规 |
 | `scripts/server_health_check.sh` | **自包含单文件**巡检（不依赖 `lib/`）：内存/Swap+OOM 历史、根分区+inode、ESTABLISHED 外联+非标/管理端口、SSH 爆破 Top5、Caddy/后端服务与容器健康。带 `--self-test` 负向证伪自检。**不进告警链路**，用于救援/对照/新机摸底 |
 | `lib/` | Bash 与 Python 公共库，两个日巡检脚本都依赖。**2026-10-05 起含 `ops_systemd_check()`**（关键服务 / 备份定时器 / failed 单元白名单）与 `mon.textfile` 判据 —— 放在这里是因为 `daily-check.sh` **没有定时器**，判据必须落在真会跑的脚本上 |
-| `systemd/` | 6 个定时任务单元 + [`MEMO.md`](systemd/MEMO.md)（安装/回滚/退出码语义/踩过的坑）。**2026-09-28 已安装并 enable** |
+| `systemd/` | 7 个定时任务单元 + [`install.sh`](systemd/install.sh) + [`MEMO.md`](systemd/MEMO.md)（安装/回滚/退出码语义/踩过的坑）。前 6 个 **2026-09-28 已安装并 enable**；`server-health` 见下方说明 |
+| `logrotate/` | `knowtrace-health-check` —— 轮转 `/var/log/health_check.log`。用 **copytruncate**（该日志是追加写的，默认的 rename+create 会丢行）。由 `systemd/install.sh` 安装到 `/etc/logrotate.d/` |
 | `../deploy/systemd/` | ⚠️ **另一组单元在这里，不在本目录** —— 见下方说明 |
 | `ops.conf.example` | 配置模板。**2026-10-05 新增键 `SYSTEMD_FAILED_ALLOWLIST`** —— failed 单元判据的白名单，**缺省为空**（= 任何 failed 都算问题）。每一项都要能说清理由；当前只有 `repass.service`（`INC-S2-003` 判为云厂商控制台救援链路，刻意保留）。**改这个键等于改判据口径**，别为了让列表好看而往里面加 |
 
@@ -95,6 +96,25 @@ diff -rq /opt/knowtrace/scripts/ops/ /opt/knowtrace-ops/ 2>&1 \
 
 它带一个 `--self-test`：注入假故障后断言判据必定报警。**这是判据本身的可证伪性检验**，
 不是「脚本能跑通」的检验 —— 两者必须分清。
+
+### server-health 定时器为什么**不**接告警链路
+
+`knowtrace-workflow-server-health.timer`（每天 20:10 UTC）会跑它并留下报告，
+但**刻意不接** `write-ops-metrics.sh`：
+
+- `write-ops-metrics.sh` 的 `WATCHED` 只认 `daily-ops` / `weekly-check` / `monthly-ops`；
+- 而 `KnowTraceOpsCheckFailed` 规则是 `knowtrace_ops_report_worst_level >= 3`
+  —— **不带 `script` 过滤**，任何被 WATCHED 的脚本报 FAIL 都会发同一封 critical。
+
+若把本脚本加进 `WATCHED`，它与 `daily-ops` **每天各报一次同类问题**（内存/磁盘/服务），
+同一次故障会发**两封 critical 邮件** —— 正是本项目 S-03 说的
+「一条会被忽略的告警比没有告警更糟」。**告警仍由 daily-ops 那条链路负责**；
+本单元的定位是**留下按排班自然触发的记录**。
+
+> 报告文件名是 `<UTC戳>-server_health_check.json`（**戳在前**），
+> 而不是既有报告的 `<script>-<UTC戳>.json`。这是刻意的：
+> `write-ops-metrics.sh` 用正则 `(.+)-(\d{8}T\d{6}Z)\.json` 抓取，
+> 戳在前就不会被它命中，避免误入链路或与真日巡检撞名。
 
 ## 结论分级与退出码
 

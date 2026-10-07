@@ -1102,14 +1102,37 @@ if [[ -n "$HC_JSON_OUT" ]]; then
         s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
         printf '%s' "$s"
     }
+
+    # --json 传**目录**时自动补时间戳文件名，传文件路径则照用。
+    # 为什么要这样：scripts/ops 下日/周/月巡检的 `--json` 收的是**目录**
+    # （`--json /var/lib/knowtrace/reports/`），由脚本自己拼 `<script>-<UTC>.json`。
+    # 本脚本最初的语义是「收完整文件路径」—— 两者不一致，
+    # 于是按既有约定写的 systemd 单元（传目录）会让报告写到目录名那个「文件」上并失败。
+    # 现在两种都收：路径以 / 结尾或已是目录 ⇒ 当成目录。
+    json_target="$HC_JSON_OUT"
+    if [[ "$json_target" == */ || -d "$json_target" ]]; then
+        json_target="${json_target%/}/$(date -u '+%Y%m%dT%H%M%SZ')-${HC_SCRIPT_NAME}.json"
+        # 文件名用 <UTC戳>-<script>.json，与既有报告 <script>-<UTC戳>.json **不一样** ——
+        # 这是刻意的：既有 write-ops-metrics.sh 用正则 `(.+)-(\d{8}T\d{6}Z)\.json`
+        # 抓取 `daily-ops-…` 这类文件，若本脚本也叫 `daily-ops-…` 会与真日巡检**撞名**。
+        # 反过来写（戳在前）既不会被那个正则命中，也保留了可排序性。
+    fi
+
     {
         printf '{\n'
+        # schema/title/hostname/generated_at 与 scripts/ops 的报告保持同名同义，
+        # 这样同一目录下两类报告可以被同一套工具解析（少一处口径分叉）。
+        printf '  "schema": "knowtrace.health-check/1",\n'
         printf '  "script": "%s",\n' "$HC_SCRIPT_NAME"
         printf '  "version": "%s",\n' "$HC_VERSION"
-        printf '  "host": "%s",\n' "$(hc_json_escape "$HC_HOSTNAME")"
-        printf '  "generated_utc": "%s",\n' "$HC_RUN_UTC"
-        printf '  "worst_level": "%s",\n' "$WORST"
+        printf '  "title": "%s",\n' "单机轻量巡检（server_health_check）"
+        printf '  "hostname": "%s",\n' "$(hc_json_escape "$HC_HOSTNAME")"
+        printf '  "generated_at": "%s",\n' "$HC_RUN_UTC"
+        # worst 是既有工具读的键名（write-ops-metrics.sh 读 report["worst"]），
+        # 因此这里也叫 worst，而不是自创 worst_level。
+        printf '  "worst": "%s",\n' "$WORST"
         printf '  "exit_code": %s,\n' "$EXIT_CODE"
+        printf '  "config_file": "%s",\n' "$(hc_json_escape "${hc_conf_file:-}")"
         printf '  "counts": {"fail": %s, "warn": %s, "ok": %s, "info": %s},\n' \
             "$hc_count_fail" "$hc_count_warn" "$hc_count_ok" "$hc_count_info"
         printf '  "findings": [\n'
@@ -1121,7 +1144,7 @@ if [[ -n "$HC_JSON_OUT" ]]; then
                 "$(hc_json_escape "${hc_message[$i]}")" "$sep"
         done
         printf '  ]\n}\n'
-    } > "$HC_JSON_OUT" 2>/dev/null || printf '警告：无法写入 JSON 报告 %s\n' "$HC_JSON_OUT" >&2
+    } > "$json_target" 2>/dev/null || printf '警告：无法写入 JSON 报告 %s\n' "$json_target" >&2
 fi
 
 # ----------------------------------------------------------------------------

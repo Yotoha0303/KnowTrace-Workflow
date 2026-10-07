@@ -1,0 +1,47 @@
+# /etc/logrotate.d/knowtrace-health-check
+#
+# 轮转 server_health_check.sh 的巡检日志。
+# 由 scripts/ops/systemd/install.sh 从 /opt/knowtrace-ops/logrotate/ 安装到此路径。
+#
+# 为什么用 copytruncate 而不是 logrotate 默认的 create（rename + 新建）：
+#   本脚本是「打开 → 追加 → 关闭」的写入者（每次 hc_log_line 都是一次 >> 打开），
+#   默认的 create 会先把文件 rename 走、再新建一个空文件。若脚本恰好在
+#   copy/rename 之后仍持有旧 inode 的句柄，那几条日志就写进已被移走的旧文件，
+#   巡检日志会**静默缺行**。copytruncate 是「先复制内容、再把原文件截断为 0」，
+#   原 inode 不变，追加写入自然落到新内容的末尾 —— 对这个写入模型安全。
+#   代价：复制与截断之间有几毫秒窗口，极少量并发写入可能丢 ——
+#   对巡检日志完全可以接受。
+#
+# 体积上限：巡检日志每天约几 KB，rotate 30 足够；另加 maxsize 兜底，
+# 防止某天异常刷屏把 /var/log 撑爆（这台机器根分区只有 57G）。
+/var/log/health_check.log {
+    daily
+    rotate 30
+    maxsize 10M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0640 root adm
+}
+
+# 说明：
+#   daily / rotate 30   每天轮转、保留 30 份（约一个月）
+#   maxsize 10M         单文件超过 10M 时也轮转，不等满一天 —— 兜底防爆盘
+#   missingok           文件不存在时不报错（首次部署、刚轮转过都会出现）
+#   notifempty          空文件不轮转，避免产生一堆 0 字节归档
+#   compress            归档压缩；纯文本日志压缩比通常 10:1 以上
+#   delaycompress       本次轮转的文件先不压，留到下一次 —— 刚轮转的文件
+#                       可能仍有写入者持有句柄，立刻压缩会出问题
+#   create 0640 root adm 轮转后新建文件的权限。给 adm 组读权限，
+#                       这样非 root 的运维账号（在 adm 组）也能看巡检日志
+#
+# 验证与排错：
+#   logrotate -d /etc/logrotate.d/knowtrace-health-check   # -d 干跑，只打印不执行
+#   logrotate -f /etc/logrotate.d/knowtrace-health-check   # -f 强制立即轮转一次
+#   ls -la /var/log/health_check.log*
+#
+# ⚠ 用 -f 强制轮转做验证前，先确认没有正在运行的巡检；
+#   并注意 logrotate 的状态文件在 /var/lib/logrotate/status，
+#   删掉日志文件**不会**重置「上次轮转时间」。

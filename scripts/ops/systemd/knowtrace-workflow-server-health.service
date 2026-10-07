@@ -1,0 +1,45 @@
+[Unit]
+Description=KnowTrace-Workflow 单机轻量巡检 (server_health_check)
+# systemd 的 Documentation= 有两个坑（都实测过，systemd 255）：
+#   1. 只接受可打印 ASCII 的 URI —— 写原始中文路径会报 "Invalid URL, ignoring"，整条被丢弃
+#   2. URI 里的 % 会被当成「单元说明符」（如 %E）去解析 —— 百分号编码必须把 % 写成 %%，
+#      否则报 "Failed to resolve unit specifiers ... Invalid slot"，且解析结果为空
+# 下面这行 = docs/ + 中文文件名百分号编码 + %% 转义，已用
+# `systemctl show -p Documentation` 与 journal 双重确认（解析非空、0 报错）。
+# ⚠ systemd-analyze verify 查不出第 2 个坑，必须真的 start 一次看 journal。
+Documentation=file:///opt/knowtrace-ops/docs/%%E8%%BF%%90%%E7%%BB%%B4%%E8%%84%%9A%%E6%%9C%%AC%%E4%%BD%%BF%%E7%%94%%A8%%E8%%AF%%B4%%E6%%98%%8E.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/knowtrace-ops
+# 读同一份 ops.conf（只读）：阈值、单元名、白名单、端口清单都复用，
+# 免得同一个项目里两套巡检对「什么算非标端口」有不同理解。
+Environment=OPS_CONF=/etc/knowtrace/ops.conf
+Environment=HC_CONF=/etc/knowtrace/ops.conf
+# 写巡检日志（人类可读、追加式）+ 一份 JSON（机器可读，供以后接链路）。
+# 报告落在统一目录 /var/lib/knowtrace/reports/，文件名 <script>-<stamp>.json，
+# 与既有报告同构 —— 但**刻意不接告警链路**：
+#   write-ops-metrics.sh 的 WATCHED 只认 daily-ops/weekly-check/monthly-ops，
+#   而 KnowTraceOpsCheckFailed 是 `worst_level >= 3` **无 script 过滤**的全量规则。
+#   若把本脚本塞进 WATCHED，它与 daily-ops 每日各报一次同类问题（内存/磁盘/服务），
+#   同一次故障会发**两封 critical 邮件** —— 正是本项目 S-03 说的
+#   「一条会被忽略的告警比没有告警更糟」。本单元的定位是**留下自然触发记录**，
+#   告警仍由 daily-ops 那条链路负责。
+ExecStart=/usr/bin/bash /opt/knowtrace-ops/scripts/server_health_check.sh --quiet --json /var/lib/knowtrace/reports/
+# 退出码 1=WARN 2=FAIL 是「巡检结论」而不是「服务失败」，不要让 systemd 标记 failed。
+# 结论由日志与 JSON 报告负责。若要 systemd 因 FAIL 报警，删掉这一行。
+SuccessExitStatus=0 1 2
+
+# 只读脚本：再收紧一层权限
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+# 日志与报告目录必须在 ReadWritePaths 里，否则会以「权限不足」的方式静默失败
+# （ProtectSystem=full 把 /usr /etc /boot 挂成只读）。
+ReadWritePaths=/var/log /var/lib/knowtrace
+
+[Install]
+WantedBy=multi-user.target
