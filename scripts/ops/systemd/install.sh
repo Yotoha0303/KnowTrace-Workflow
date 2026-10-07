@@ -256,7 +256,16 @@ fi
 log
 log "== 5/5 启用定时器 =="
 for unit in "${units[@]}"; do
-  run systemctl enable --now "${prefix}$unit.timer" >/dev/null 2>&1
+  # dry-run 下不能报「已启用」—— 那是「看起来成功、实际什么都没做」，
+  # 正是本项目反复记录的那类故障。dry-run 只说「将会做什么」。
+  if [[ "$dry_run" == true ]]; then
+    run systemctl enable --now "${prefix}$unit.timer"
+    continue
+  fi
+  systemctl enable --now "${prefix}$unit.timer" >/dev/null 2>&1 || {
+    fail "${prefix}$unit.timer 启用失败"
+    exit 3
+  }
   ok "${prefix}$unit.timer 已启用"
 done
 
@@ -266,5 +275,9 @@ systemctl list-timers 'knowtrace*' --no-pager 2>/dev/null | sed 's/^/  /' || tru
 
 log
 log "安装完成。手动跑一次看效果："
-log "  sudo systemctl start knowtrace-workflow-daily-ops.service"
+# 提示里列**本次实际安装的**单元，而不是写死 daily-ops ——
+# --only 时写死会指错对象。
+for unit in "${units[@]}"; do
+  log "  sudo systemctl start ${prefix}$unit.service"
+done
 log "  报告：sudo ls -t $reports_directory | head"
