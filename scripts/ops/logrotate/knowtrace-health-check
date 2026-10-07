@@ -23,6 +23,16 @@
     compress
     delaycompress
     copytruncate
+    # su 是**必需**的，不是可选项（2026-10-07 实测踩到）：
+    #   /var/log 的权限是 drwxrwxr-x root:syslog —— **组可写**且组不是 root。
+    #   这种父目录下 logrotate 会拒绝轮转，只打一行
+    #     error: skipping "..." because parent directory has insecure permissions
+    #   然后**跳过**。而 logrotate 的退出码仍是 0 —— 也就是说
+    #   配置装上去、`logrotate -d` 之外没人看的话，日志会**无限增长**，
+    #   正是这份配置本来要防的事没防住。本项目的原话：
+    #   「校验工具通过不等于生效」（E-05）。
+    #   加 su 明确告诉它用哪个身份轮转，跳过即消失。
+    su root root
     create 0640 root adm
 }
 
