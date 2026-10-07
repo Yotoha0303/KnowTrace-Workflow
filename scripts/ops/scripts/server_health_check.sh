@@ -316,6 +316,11 @@ MEMINFO_FILE="$(hc_conf_get HC_MEMINFO_FILE /proc/meminfo)"
 SYSTEMD_UNITS="$(hc_conf_get HC_SYSTEMD_UNITS 'caddy nginx ssh docker')"
 # 核心单元：缺失/非 active = FAIL。其余（可选组件）= WARN。
 CORE_UNITS="$(hc_conf_get HC_CORE_UNITS 'caddy')"
+# 刻意保留的 failed 单元（默认空 = 任何 failed 都算问题）。
+# 复用与 daily/weekly 巡检**同一个配置键** SYSTEMD_FAILED_ALLOWLIST，
+# 免得同一台机器在不同脚本里得出不同结论 —— 本机该键的值是 repass.service
+# （INC-S2-003：云厂商控制台救援链路，刻意保留、勿 mask）。
+SYSTEMD_FAILED_ALLOWLIST="$(hc_conf_get SYSTEMD_FAILED_ALLOWLIST '')"
 # 后端核心容器（compose 服务名）。留空则跳过容器检查。
 CORE_CONTAINERS="$(hc_conf_get HC_CORE_CONTAINERS "$(hc_conf_get EXPECTED_SERVICES '')")"
 PROJECT_DIR="$(hc_conf_get PROJECT_DIR /opt/knowtrace)"
@@ -919,16 +924,40 @@ if hc_have_cmd systemctl; then
     #      退出码来判断，故这里保留 `|| true` 只为不让非零退出中断巡检。
     other_failed="$(systemctl --failed --no-legend --no-pager --plain 2>/dev/null | awk 'NF>=1 {print $1}' || true)"
     if [[ -n "$other_failed" ]]; then
-        known=0
+        # 三类排除，逐单元判断（**不能用一个 known 标志概括**：
+        # 一个已知单元会让整体判 OK，从而掩盖同一列表里真正的未知 failed 单元）：
+        #   ① 已在本节上面单独检查过的（SYSTEMD_UNITS）
+        #   ② 本机刻意保留的（SYSTEMD_FAILED_ALLOWLIST —— 复用与 daily/weekly 同一配置键）
+        #   ③ 其余才算「需要关注」
+        unexpected_units=""
         for u in $other_failed; do
+            [[ -n "$u" ]] || continue
+            skip=0
             for k in $SYSTEMD_UNITS; do
-                [[ "$u" == "$k.service" || "$u" == "$k" ]] && known=1
+                [[ "$u" == "$k" || "$u" == "$k.service" ]] && skip=1
+            done
+            for a in $SYSTEMD_FAILED_ALLOWLIST; do
+                [[ "$u" == "$a" || "$u" == "$a.service" ]] && skip=1
+            done
+            (( skip == 0 )) && unexpected_units="${unexpected_units}${u} "
+        done
+
+        allowed_hits=""
+        for u in $other_failed; do
+            for a in $SYSTEMD_FAILED_ALLOWLIST; do
+                [[ "$u" == "$a" || "$u" == "$a.service" ]] && allowed_hits="${allowed_hits}${u} "
             done
         done
-        if (( known == 0 )); then
-            hc_warn "service.other-failed" "存在其它 failed 单元: $(printf '%s' "$other_failed" | tr '\n' ' ')"
+
+        if [[ -n "${unexpected_units// /}" ]]; then
+            hc_warn "service.other-failed" "存在其它 failed 单元: ${unexpected_units% }（不在预期单元与白名单内，需处理）"
         else
-            hc_ok "service.other-failed" "其它 failed 单元均已在本节单独报告"
+            hc_ok "service.other-failed" "无未预期的 failed 单元"
+        fi
+        # 白名单命中的单独记 INFO：让「本机确实有个 failed 单元、但是刻意保留的」这件事
+        # 仍然可见 —— 否则一旦哪天它从白名单移走，没人知道曾经有过这条。
+        if [[ -n "${allowed_hits// /}" ]]; then
+            hc_info "service.failed-allowlisted" "白名单内刻意保留的 failed 单元: ${allowed_hits% }（SYSTEMD_FAILED_ALLOWLIST，非本项目故障）"
         fi
     else
         hc_ok "service.other-failed" "无其它 failed 单元"
@@ -1379,6 +1408,7 @@ EOF
     HC_CORE_CONTAINERS="" \
     PUBLIC_DOMAIN="" \
     HC_KERN_LOG="$tmp/nonexistent-kern.log" \
+    SYSTEMD_FAILED_ALLOWLIST="repass.service" \
     bash "$0" --no-color --quiet --no-log --no-reference --json "$tmp/report.json" \
     > "$tmp/stdout.txt" 2>&1
     rc=$?
@@ -1484,15 +1514,36 @@ EOF
     st_assert "计数不应出现「数字+换行+数字」" "0" "$badcnt"
 
     # (3) `systemctl --failed --no-legend` 的 `●` 项目符号会污染 $1，
-    #     症状是报出的单元名变成项目符号本身（真机上显示为 `*`），而不是 repass.service。
-    #     判据：假 systemctl 已忠实还原「带 ●」的输出，脚本必须靠 --plain 拿到真名。
-    #     断言 message 里确实出现了 repass.service —— 没有 --plain 时这里会是符号。
-    svcmsg="$(grep -o '"check": "service.other-failed", "message": "[^"]*"' "$tmp/report.json" 2>/dev/null | head -n 1 || true)"
+    #     症状是解析出的单元名变成项目符号本身（真机上显示为 `●`），而不是 repass.service。
+    #     假 systemctl 已忠实还原「带 ●」的输出；没有 --plain 时下面取到的会是符号。
+    #     注：白名单生效时，单元名落在 service.failed-allowlisted 这条 INFO 里
+    #     （other-failed 那条此时是「无未预期」），所以从这里取。
+    svcmsg="$(grep -o '"check": "service.failed-allowlisted", "message": "[^"]*"' "$tmp/report.json" 2>/dev/null | head -n 1 || true)"
     if printf '%s' "$svcmsg" | grep -q 'repass\.service'; then
         st_assert "failed 单元名正确解析（--plain 生效）" "ok" "ok"
     else
         st_assert "failed 单元名正确解析（--plain 生效）" "含 repass.service" "${svcmsg:-未找到}"
     fi
+
+    # ---- 白名单：刻意保留的 failed 单元不应报 WARN ----
+    # 本机 SYSTEMD_FAILED_ALLOWLIST=repass.service（云厂商救援链路，INC-S2-003）。
+    # 不认这个键，本脚本就会成为**唯一**说这台机器不健康的工具（daily/weekly 都认）。
+    st_assert "白名单内的 failed 单元 → other-failed 应为 OK" "OK" "$(st_level_of service.other-failed)"
+    st_assert "白名单命中要记 INFO（保持可见）" "INFO" "$(st_level_of service.failed-allowlisted)"
+
+    # 反向：白名单**为空**时，同一个 failed 单元必须报 WARN（防止「一律不报」的假修复）
+    PATH="$tmp/bin:$PATH" \
+    HC_MEMINFO_FILE="$tmp/meminfo-ok" \
+    HC_AUTH_LOG="$tmp/auth.log" \
+    HC_KERN_LOG="$tmp/nonexistent-kern.log" \
+    SYSTEMD_FAILED_ALLOWLIST="" \
+    bash "$0" --no-color --quiet --no-log --no-reference --json "$tmp/report4.json" \
+    > /dev/null 2>&1 || true
+    st4() {
+        grep -o "{\"level\": \"[A-Z]*\", \"check\": \"service.other-failed\"[^}]*}" "$tmp/report4.json" 2>/dev/null \
+            | head -n 1 | sed -E 's/^\{"level": "([A-Z]+)".*/\1/' || printf 'MISSING'
+    }
+    st_assert "白名单为空时同一单元应报 WARN" "WARN" "$(st4)"
 
     printf '\n  自检结果: PASS=%s FAIL=%s\n' "$pass" "$fail"
     if (( fail > 0 )); then
