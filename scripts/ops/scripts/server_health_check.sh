@@ -271,6 +271,23 @@ hc_worst_level() {
 }
 hc_have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# 计数：读 stdin，输出**一个干净的整数**。
+#
+# ⚠️ 为什么不能写 `grep -c X || printf '0'`（2026-10-07 在真机踩到）：
+#   `grep -c` 在「无匹配」时会 **打印 0 并退出 1**。外面再补一个 `|| printf '0'`，
+#   命令替换里就得到 "0\n0" —— 赋值给变量后是**含换行的两行字符串**。后果是：
+#     · `(( failed_pw >= 300 ))` 报 `syntax error in expression (error token is "0")`
+#     · 而且**每处调用都报**，一条只读巡检刷出满屏噪声
+#     · 更糟：这个变量还被拼进结论字符串，于是报告里出现「Failed password 0↵0 次」
+#   正确做法是**让 grep 自己兜底**（它本来就输出 0），不要在外面再补一个 0；
+#   外层只做「结果不像数字才归零」的防御。
+hc_count() {
+    local n
+    n="$(grep -c "$@" 2>/dev/null)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s' "$n"
+}
+
 # ----------------------------------------------------------------------------
 # 3. 配置与阈值（ops.conf 可覆盖，缺省值贴合本项目实况）
 # ----------------------------------------------------------------------------
@@ -474,7 +491,7 @@ if [[ -z "$oom_source" ]]; then
 fi
 
 if [[ -n "$oom_hits" ]]; then
-    oom_count="$(printf '%s\n' "$oom_hits" | grep -c . || printf '0')"
+    oom_count="$(printf '%s\n' "$oom_hits" | hc_count .)"
     oom_last="$(printf '%s\n' "$oom_hits" | tail -n 1 | cut -c1-120)"
     hc_fail "host.oom-history" "发现 ${oom_count} 条 OOM 击杀记录（来源 $oom_source），最近一条：$oom_last"
     if [[ "$HC_QUIET" != "1" ]]; then
@@ -571,7 +588,7 @@ if hc_have_cmd ss; then
     else
         # 拆成「地址」与「端口」两列。ss 的地址写法有 IPv4 (`1.2.3.4:80`)、
         # IPv6 (`[::]:80`)、通配 (`*:80`) 三种，所以端口统一取**最后一个冒号之后**。
-        wide_open=""
+        wide_open=""; wide_ports=""
         all_ports=""
         while IFS= read -r addr; do
             [[ -n "$addr" ]] || continue
@@ -580,28 +597,49 @@ if hc_have_cmd ss; then
             all_ports="${all_ports}${port} "
             # 通配地址 = 绑到所有网卡 = 公网可达
             case "$addr" in
-                0.0.0.0:*|\[::\]:*|\*:*|:::*|\[::\]) wide_open="${wide_open}${addr} " ;;
+                0.0.0.0:*|\[::\]:*|\*:*|:::*|\[::\])
+                    wide_open="${wide_open}${addr} "
+                    wide_ports="${wide_ports}${port} " ;;
             esac
         done <<< "$listeners"
 
-        port_count="$(printf '%s\n' $all_ports | grep -c . || printf '0')"
+        port_count="$(printf '%s\n' $all_ports | hc_count .)"
         port_list="$(printf '%s\n' $all_ports | sort -un | tr '\n' ' ')"
-        hc_info "net.listeners" "共监听 ${port_count} 个端口: ${port_list}"
+        wide_port_list="$(printf '%s\n' $wide_ports | sort -un | tr '\n' ' ')"
+        hc_info "net.listeners" "共监听 ${port_count} 个端口；其中通配地址（公网可达）: ${wide_port_list:-无}"
 
         # 非标端口：既不在标准端口表，也不在本机预期清单里。
-        # 这类端口不是「错误」，而是「需要有人认领」—— 所以是 WARN 不是 FAIL。
-        nonstd=""
+        #
+        # ⚠️ 必须按**是否公网可达**分成两类，不能一律 WARN（2026-10-07 修正）：
+        #   真机上 12 个「非标」端口里，**全部**都只绑 127.0.0.1（docker-proxy /
+        #   caddy admin / containerd …）。它们是正常的内网服务，只是不在我的
+        #   标准表里 —— 对它们每轮报 WARN，等于给自己造了一条永远不变的噪音。
+        #   本项目 S-03 记过这条：「一条会被忽略的告警比没有告警更糟」。
+        #   所以：
+        #     · 通配地址上的非标端口 → WARN（新增的攻击面，需要有人认领）
+        #     · 仅回环上的非标端口   → INFO（事实记录，不是问题）
+        nonstd_wide=""
+        nonstd_loop=""
         for p in $port_list; do
             found=0
             for s in $HC_STANDARD_PORTS $HC_EXPECTED_PORTS; do
                 [[ "$p" == "$s" ]] && { found=1; break; }
             done
-            (( found == 0 )) && nonstd="${nonstd}${p} "
+            (( found == 1 )) && continue
+            # 是否出现在通配监听里
+            if printf '%s\n' "$wide_port_list" | grep -qw -- "$p"; then
+                nonstd_wide="${nonstd_wide}${p} "
+            else
+                nonstd_loop="${nonstd_loop}${p} "
+            fi
         done
-        if [[ -n "${nonstd// /}" ]]; then
-            hc_warn "net.nonstandard-ports" "非标监听端口: ${nonstd% }（不在标准表 [$HC_STANDARD_PORTS] 与预期清单 [${HC_EXPECTED_PORTS:-空}] 内，需确认用途）"
+        if [[ -n "${nonstd_wide// /}" ]]; then
+            hc_warn "net.nonstandard-ports" "**公网可达**的非标端口: ${nonstd_wide% }（不在标准表 [$HC_STANDARD_PORTS] 与预期清单 [${HC_EXPECTED_PORTS:-空}] 内，需确认用途）"
         else
-            hc_ok "net.nonstandard-ports" "全部监听端口都在标准表或预期清单内"
+            hc_ok "net.nonstandard-ports" "通配地址上无未预期的非标端口"
+        fi
+        if [[ -n "${nonstd_loop// /}" ]]; then
+            hc_info "net.nonstandard-ports-loopback" "仅回环的非标端口: ${nonstd_loop% }（本机服务，非公网攻击面）"
         fi
 
         # 管理端口暴露到公网 = FAIL。这是实打实的攻击面：
@@ -642,9 +680,13 @@ if hc_have_cmd ss; then
         fi
     else
         # 去掉本地回环对端：127.0.0.0/8 与 ::1 是进程间通信，不是「对外」
-        ext_conns="$(printf '%s\n' "$established" | awk 'NF>=5 {print $4" -> "$5}' \
+        # 列序：ss -tnpH 的输出是 Recv-Q / Send-Q / **Local** / **Peer** / Process
+        # （表头被 -H 去掉了，所以没有偏移）。因此本地地址是 $3、对端是 $4，
+        # **不是 $4/$5** —— 2026-10-07 在真机上写错过一次，症状是明细行印成
+        # 「对端 -> 进程」，看起来还挺像回事，所以必须靠真机输出核对列序。
+        ext_conns="$(printf '%s\n' "$established" | awk 'NF>=4 {print $3" -> "$4}' \
             | grep -vE '^(127\.|\[::1\])' | grep -vE ' -> (127\.|\[::1\])' || true)"
-        ext_count="$(printf '%s\n' "$ext_conns" | grep -c . || printf '0')"
+        ext_count="$(printf '%s\n' "$ext_conns" | hc_count .)"
 
         # 白名单：配置了就把命中白名单的摘出去，剩下的才叫「异常」
         if [[ -n "$HC_ESTABLISHED_ALLOW" ]]; then
@@ -652,7 +694,7 @@ if hc_have_cmd ss; then
             for allow in $HC_ESTABLISHED_ALLOW; do
                 unlisted="$(printf '%s\n' "$unlisted" | grep -v -- "$allow" || true)"
             done
-            unlisted_count="$(printf '%s\n' "$unlisted" | grep -c . || printf '0')"
+            unlisted_count="$(printf '%s\n' "$unlisted" | hc_count .)"
             if (( unlisted_count > 0 )); then
                 hc_warn "net.established" "有 ${unlisted_count} 条非白名单对外连接（共 ${ext_count} 条），需确认对端"
             else
@@ -726,9 +768,9 @@ else
     # 教训：**同一事件的多个日志面不能相加**，要么取其一，要么去重。
     # 这里以 `Failed password`（真实的口令认证失败）作为阈值依据，
     # 其余两类只作为上下文展示。
-    failed_pw="$(printf '%s\n' "$bf_lines" | grep -c 'Failed password' || printf '0')"
-    invalid_user="$(printf '%s\n' "$bf_lines" | grep -c 'Invalid user' || printf '0')"
-    conn_closed="$(printf '%s\n' "$bf_lines" | grep -c 'Connection closed by authenticating user' || printf '0')"
+    failed_pw="$(printf '%s\n' "$bf_lines" | hc_count 'Failed password')"
+    invalid_user="$(printf '%s\n' "$bf_lines" | hc_count 'Invalid user')"
+    conn_closed="$(printf '%s\n' "$bf_lines" | hc_count 'Connection closed by authenticating user')"
 
     detail="Failed password ${failed_pw} 次 / Invalid user ${invalid_user} 次 / 认证中连接被关闭 ${conn_closed} 次（来源 $bf_source）"
     if (( failed_pw >= THRESH_BF_FAIL )); then
@@ -772,7 +814,7 @@ else
     # 本项目 2026-10-04 那次告警的取证结论就是靠这一条得出的
     # （10 次成功登录全部是用户自己的公钥）。
     accepted="$(printf '%s\n' "$bf_lines" | grep -E 'Accepted (publickey|password)' || true)"
-    accepted_pw="$(printf '%s\n' "$accepted" | grep -c 'Accepted password' || printf '0')"
+    accepted_pw="$(printf '%s\n' "$accepted" | hc_count 'Accepted password')"
     if (( accepted_pw > 0 )); then
         # 口令登录成功 = 要么密码认证还开着，要么有人在用密码进来。两者都严重。
         hc_fail "ssh.accepted-password" "窗口内有 ${accepted_pw} 次**口令登录成功**（本机应为纯公钥登录，需立即核查）"
@@ -851,7 +893,7 @@ hc_check_unit() {
     # 那会造成大量噪音；这里只要「进程级崩溃」的证据。
     if [[ "$state" == "active" || "$state" == "failed" ]] && hc_have_cmd journalctl; then
         crashes="$(journalctl -u "$unit" --since '24 hours ago' --no-pager 2>/dev/null \
-            | grep -Ec 'segfault|panic|core dumped|Failed with result|Main process exited, code=(exited|killed)' || printf '0')"
+            | hc_count -E 'segfault|panic|core dumped|Failed with result|Main process exited, code=(exited|killed)')"
         if [[ "$crashes" =~ ^[0-9]+$ ]] && (( crashes > 0 )); then
             hc_warn "service.$unit.crashes" "近 24h 有 ${crashes} 条进程级失败日志（崩溃/非零退出）"
         fi
@@ -868,7 +910,14 @@ if hc_have_cmd systemctl; then
 
     # 主机上其它 failed 单元：不属于本项目但同样说明「有东西坏了」。
     # 这里只 WARN，因为本机可能有刻意保留的云厂商救援单元。
-    other_failed="$(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' || true)"
+    # ⚠️ 两个坑（2026-10-07 在真机踩到）：
+    #   1. 必须加 `--plain`：不加时 systemd 会在每个单元名前印一个 `●` 项目符号，
+    #      于是 `awk '{print $1}'` 取到的是 `●` 而不是单元名 —— 症状是报出
+    #      「存在其它 failed 单元: *」（所有单元名都被替换成了那个符号）。
+    #   2. 不能写 `|| true` 兜空：`systemctl --failed` 在**没有** failed 单元时
+    #      退出码是 0 且输出为空，`--plain` 后属实为空；但要靠「输出为空」而非
+    #      退出码来判断，故这里保留 `|| true` 只为不让非零退出中断巡检。
+    other_failed="$(systemctl --failed --no-legend --no-pager --plain 2>/dev/null | awk 'NF>=1 {print $1}' || true)"
     if [[ -n "$other_failed" ]]; then
         known=0
         for u in $other_failed; do
@@ -1262,7 +1311,14 @@ case "$1" in
   cat)        case "$2" in caddy.service|nginx.service|ssh.service|docker.service) exit 0 ;; *) exit 1 ;; esac ;;
   is-active)  case "$2" in caddy.service) printf 'failed\n'; exit 3 ;; *) printf 'active\n'; exit 0 ;; esac ;;
   show)       printf '0\n'; exit 0 ;;
-  --failed)   printf 'caddy.service loaded failed failed Caddy\n'; exit 0 ;;
+  # 忠实复刻真机行为：systemctl --failed --no-legend 会**前置一个 ● 项目符号**
+  # （除非加 --plain）。假 systemctl 若不还原这一点，回归用例就测不到那个 bug。
+  --failed)   if [[ "$*" == *--plain* ]]; then
+                  printf 'repass.service loaded failed failed repass\n'
+              else
+                  printf '\xe2\x97\x8f repass.service loaded failed failed repass\n'
+              fi
+              exit 0 ;;
   *)          exit 0 ;;
 esac
 EOF
@@ -1410,6 +1466,33 @@ EOF
             | head -n 1 | sed -E 's/^\{"level": "([A-Z]+)".*/\1/' || printf 'MISSING'
     }
     st_assert "有 MemAvailable 且可用 50% 时 host.memory 应为 OK" "OK" "$(st3)"
+
+    # ---- 回归：真机跑出来的三类缺陷（2026-10-07，本地自检**全绿**却漏掉的）----
+    # 这三条只有拿真机输出才发现的，所以必须固化成自检用例，
+    # 否则「本地全绿」会再次掩盖它们。
+
+    # (1) `grep -c X || printf '0'` 会产出 "0\n0"（grep 无匹配时既打印 0 又退出 1），
+    #     导致 `(( n >= N ))` 报 syntax error，并把「0↵0 次」写进报告。
+    #     断言：本地空数据下不应出现任何 arithmetic 报错。
+    errs="$(grep -c 'syntax error in expression' "$tmp/stdout.txt" 2>/dev/null || true)"
+    [[ "$errs" =~ ^[0-9]+$ ]] || errs=0
+    st_assert "空数据下不应有 arithmetic syntax error" "0" "$errs"
+
+    # (2) 计数结果里不应夹换行（"0\n0" 的另一个症状）
+    badcnt="$(grep -cE 'Failed password [0-9]+$' "$tmp/stdout.txt" 2>/dev/null || true)"
+    [[ "$badcnt" =~ ^[0-9]+$ ]] || badcnt=0
+    st_assert "计数不应出现「数字+换行+数字」" "0" "$badcnt"
+
+    # (3) `systemctl --failed --no-legend` 的 `●` 项目符号会污染 $1，
+    #     症状是报出的单元名变成项目符号本身（真机上显示为 `*`），而不是 repass.service。
+    #     判据：假 systemctl 已忠实还原「带 ●」的输出，脚本必须靠 --plain 拿到真名。
+    #     断言 message 里确实出现了 repass.service —— 没有 --plain 时这里会是符号。
+    svcmsg="$(grep -o '"check": "service.other-failed", "message": "[^"]*"' "$tmp/report.json" 2>/dev/null | head -n 1 || true)"
+    if printf '%s' "$svcmsg" | grep -q 'repass\.service'; then
+        st_assert "failed 单元名正确解析（--plain 生效）" "ok" "ok"
+    else
+        st_assert "failed 单元名正确解析（--plain 生效）" "含 repass.service" "${svcmsg:-未找到}"
+    fi
 
     printf '\n  自检结果: PASS=%s FAIL=%s\n' "$pass" "$fail"
     if (( fail > 0 )); then
