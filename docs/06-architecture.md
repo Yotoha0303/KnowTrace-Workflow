@@ -48,9 +48,13 @@ flowchart LR
 
 代价：
 
-- 当前项目不再以 Go 后端训练为主要目标。
+- 业务后端能力集中在 TypeScript 一侧，团队若按「前端 / 后端」分工需要重新划分边界。
 - 必须防止 Server Action、组件和数据库查询互相耦合。
 - 长任务不能依赖普通 Server Action 无限等待。
+
+> 「代价」这一节记录的是**取舍**，不是缺陷。上面每一条都对应下游有明确的补偿机制
+> （依赖方向禁令、Application Service 分层、Route Handler 与 Worker 迁移条件），
+> 而不是被忽略的遗留问题。
 
 ## 3. Next.js 数据模式
 
@@ -205,7 +209,12 @@ app
 postgres
 ```
 
-首版单实例，不引入 Redis、消息队列和共享 ISR Cache。页面以动态数据读取为主，避免为简单内部工具增加复杂缓存一致性问题。
+Web 层以**无状态单实例应用 + 外置数据层**起步：会话状态、业务数据、认证数据全部外置，
+应用容器可随时整体重建而不丢状态。这一形态面向轻量化、资源集约型环境，
+同时也是水平扩展的前提——增加应用副本不需要改动会话或数据模型。
+
+首版不引入 Redis（应用侧）、消息队列和共享 ISR Cache：页面以动态数据读取为主，
+避免为简单内部工具增加复杂缓存一致性问题。引入条件的判据见第 6 节（何时迁移到 Worker）。
 
 认证采用仓库内 `services/go-user-system` 的独立运行服务（Go、MySQL、Redis），由根级 Compose/Makefile 统一编排。浏览器只访问 KnowTrace-Workflow 同源 BFF，access/refresh token 都保存在 HttpOnly Cookie；Proxy 执行页面前置门禁，Server Action 和私有图片 Route Handler再独立授权。详细边界见 ADR-0013 与 ADR-0014。
 

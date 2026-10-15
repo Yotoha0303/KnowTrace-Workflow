@@ -22,7 +22,7 @@ deploy/
 ├── ansible/      Day 0 宿主机（依赖 / sshd / sysctl / UFW / fail2ban）
 ├── caddy/        Caddyfile（域名→证书→反代）
 ├── alloy/        采集：容器 / Caddy / Nginx 日志 → Loki
-├── loki/         Loki 单机配置（本地文件系统 + 7 天保留）
+├── loki/         Loki 单实例配置（本地文件系统 + 7 天保留）
 ├── grafana/      数据源与看板的 provisioning
 ├── monitoring/   Prometheus 配置 / 规则 / blackbox 探针
 ├── nginx/        127.0.0.1:8080 的站点配置（Caddy 的下游）

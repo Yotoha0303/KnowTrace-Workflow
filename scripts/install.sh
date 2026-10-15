@@ -137,7 +137,7 @@ fi
 . /etc/os-release
 case "${ID:-}" in
   ubuntu|debian) ok "OS: ${PRETTY_NAME:-unknown}" ;;
-  *) die "只支持 Ubuntu / Debian（当前 ID=${ID:-unknown}）。其它发行版请照 docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/ 手工部署" ;;
+  *) die "只支持 Ubuntu / Debian（当前 ID=${ID:-unknown}）。其它发行版请照 scripts/bootstrap/README.md 手工部署" ;;
 esac
 info "仓库 : $REPO_URL ($REPO_REF)"
 info "目录 : $TARGET_DIR"
@@ -156,7 +156,7 @@ fi
 step "系统依赖"
 # 清单依据（两个来源，不是猜的）：
 #   * scripts/bootstrap/lib/preflight.sh 声明的必需命令
-#   * docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/04-…教程.md §5
+#   * scripts/bootstrap/lib/preflight.sh 声明的必需命令（其 README 列了完整清单）
 # 其中 jq 与 flock 是**必需**而非可选：巡检脚本里有 26 处 jq 调用，
 # 缺了不是"少个功能"，是**静默产出空字段的报告**（调用点带 2>/dev/null）。
 # 注意 jq 在 Ubuntu 上可能因 fwupd 依赖碰巧存在，不能指望。
@@ -308,7 +308,7 @@ info "  1) 防火墙（自锁风险：先放行 SSH 端口再 enable，否则立
 info "     ufw allow <你的SSH端口>/tcp && ufw allow 80/tcp && ufw allow 443/tcp"
 info "     ufw default deny incoming && ufw default allow outgoing && ufw --force enable"
 info "  2) SSH 加固（改错即失联）：装公钥 → **另开窗口验证密钥能登录** → 才关密码登录"
-info "     样例：docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/配置样例/00-knowtrace-hardening.conf"
+info "     sshd 样例：deploy/ansible/roles/hardening/tasks/main.yml（权威加固实现）"
 info "  【更省事】以上 Day 0 加固（UFW / sshd / sysctl / fail2ban）可交给幂等的 Ansible："
 info "     cd /opt/knowtrace/deploy/ansible && ansible-playbook site.yml（先 --tags access 装公钥并验证，再全量）"
 info ""

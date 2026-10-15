@@ -19,7 +19,7 @@ Bash 用 ``openssl s_client | openssl x509 -noout -enddate`` 看一张证书足�
 安全性说明
 ----------
 * 本脚本**不提供**跳过 TLS 校验来「制造通过结果」的选项，遵循
-  ``docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/Bug记录/BUG-S2-005`` 的结论：
+  ``KnowTrace-ops/archive/docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/Bug记录/BUG-S2-005`` 的结论：
   不能用「不验证证书」换取通过。
 * 当证书链校验失败时，脚本仍会尽力读取证书内容以报告有效期，但整体结论一定
   是 FAIL —— 信息用于排障，结论不被美化。

@@ -115,8 +115,9 @@ sudo PROJECT_DIR=/opt/knowtrace bash scripts/linux/fix-uploads-ownership.sh
 | 运维执行记录与事故复盘 | `../KnowTrace-ops/docs/` |
 | 监控栈部署与告警链路 | [`16-stage3-observability.md`](16-stage3-observability.md) |
 | 备份、恢复、压测与故障迭代 | [`15-stage2-vps-reliability.md`](15-stage2-vps-reliability.md) |
-| 从零部署的完整实操 | [`KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/`](KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/) |
+| 从零部署 | [`../scripts/install.sh`](../scripts/install.sh)（一键部署）；手工步骤见 `../scripts/bootstrap/README.md` |
 | 运维脚本用法与说明 | `../scripts/ops/README.md`、`../scripts/bootstrap/README.md` |
+| 历史部署档案（已移出仓库） | `../KnowTrace-ops/archive/` —— 阶段一至三的学习档案。**为什么移出**见该目录 `README.md` |
 
 > [!IMPORTANT]
 > 部署命令的**权威写法**在 [`../CONTRIBUTING.md`](../CONTRIBUTING.md) 的「部署验证」一节：

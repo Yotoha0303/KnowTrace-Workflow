@@ -5,7 +5,7 @@
 #
 # 对应文档：
 #   docs/日常运维/日常运维清单.md
-#   docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/文档/07-备份巡检与故障处理SOP.md（6.1 每日五分钟巡检）
+#   KnowTrace-ops/archive/docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/文档/07-备份巡检与故障处理SOP.md（6.1 每日五分钟巡检）
 #
 # 职责（Bash 的系统操作层）：
 #   主机身份 / 运行时间 / 负载 / CPU / 内存 / Swap / 磁盘 / inode

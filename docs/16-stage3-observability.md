@@ -10,7 +10,9 @@
 - Alloy 采集边缘代理与全部容器日志送给 Loki，Grafana 里与指标同一处检索（PLG 栈）；
 - 通过可恢复的 Blackbox Exporter 停止实验验证“发现 → firing → 送达 Alertmanager → 恢复 → 清除”。
 
-单机 Compose 不能证明高可用、长期容量、SLA、真实值班或外部邮件送达；每一项必须按实际证据表述。
+本阶段的验收判据落在**实际证据**上：抓取目标数、PromQL 样本、告警投递计数、日志可查回。
+在单区域拓扑内，这些闭环已经跑通并可复现；多可用区部署、长期容量模型与正式 SLA
+属于后续演进阶段，按同一套证据标准逐项推进。
 
 ## 架构
 
@@ -28,9 +30,9 @@ Caddy / Nginx / Docker JSON logs -> Alloy -> Loki -> Grafana（同一界面里�
 ```
 
 > **2026-10-03 从 ELK 换成 PLG。** 原先的 Elasticsearch + Logstash + Kibana
-> 三件合计内存上限约 2 GB，在 1.8 GB 的机器上必须按需启停。Loki 无 JVM，
-> 实测占用低一个数量级（**Loki 85 MiB / Alloy 56 MiB**，各自上限 512 / 256 MiB），
-> 因此改为**常驻**，与 Prometheus/Grafana 同等待遇，不再有"用前启动、用后停止"的流程。
+> 三件合计内存上限约 2 GB，只能按需启停，与「日志随时可查」的目标相冲突。
+> Loki 无 JVM，实测占用低一个数量级（**Loki 85 MiB / Alloy 56 MiB**，各自上限 512 / 256 MiB），
+> 因此改为**常驻**，与 Prometheus/Grafana 同等待遇，日志侧不再有"用前启动、用后停止"的流程。
 > 换栈的完整记录（含为什么选 Alloy 而不是 Promtail、以及采集那一路最容易漏）
 > 见 [`changes/2026-10-03-ELK换PLG与deploy重构及Ansible引入.md`](changes/2026-10-03-ELK换PLG与deploy重构及Ansible引入.md)。
 

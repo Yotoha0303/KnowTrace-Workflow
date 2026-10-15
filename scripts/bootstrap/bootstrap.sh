@@ -325,7 +325,7 @@ b_report_remaining_manual() {
       caddyfile)
         b_warn "反向代理与证书 —— 仓库不提供 Caddyfile（与域名强相关）"
         b_info "    写入 /etc/caddy/Caddyfile 后：caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy"
-        b_info "    模板见 docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/服务器配置样例/Caddyfile"
+        b_info "    Caddy 会自动申请证书；最小可用配置见 deploy/ 与运维手册的反向代理一节"
         ;;
       ufw)
         b_warn "防火墙 —— 有自锁风险，脚本绝不代启"
@@ -565,5 +565,5 @@ if [[ -n "$BOOTSTRAP_RECORD_FILE" ]]; then
 fi
 b_info "未自动化的部分（需人工）：反向代理与证书、DNS（ansible 阶段若因缺 ansible-core/公钥被跳过，系统包/sshd/UFW 也需人工）。"
 b_report_remaining_manual
-b_info "指引见 docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/04-从零部署到当前线上状态-完整实操教程.md"
+b_info "部署指引见 scripts/bootstrap/README.md 与 docs/日常运维/运维手册.md"
 b_record "=== bootstrap 结束 $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="

@@ -89,8 +89,10 @@ apt-get install -y git curl openssl python3 jq util-linux ca-certificates
 | 反向代理与证书 | 与 DNS 和域名强相关，且 Caddy 自带 ACME |
 | 告警凭据（163 授权码） | 项目设计就是必须隐藏输入，不能进仓库 |
 
-这几项的完整步骤见
-`docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/04-从零部署到当前线上状态-完整实操教程.md`（663 行）。
+这几项的完整步骤见 [`docs/日常运维/运维手册.md`](../../docs/日常运维/运维手册.md)（连接、巡检、
+备份恢复、部署发布、故障排查、宿主机加固，每条命令都实测过）。
+VPS 部署期的完整实操教程（663 行）已随阶段档案移出仓库，现位于
+`../../KnowTrace-ops/archive/docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/`。
 
 ## 设计依据与一个诚实的边界
 
@@ -114,5 +116,6 @@ apt-get install -y git curl openssl python3 jq util-linux ca-certificates
 
 - 设计文档与三块拦路石：`KnowTrace-ops/docs/2026-09-29-一键部署可行性与设计.md`
 - 事故复盘（预检阈值的依据）：`KnowTrace-ops/docs/2026-09-30-全站500事故复盘.md`
-- 从零部署人工教程：`docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段一/文档/04-*.md`
+- 从零部署人工教程：见 [`docs/日常运维/运维手册.md`](../../docs/日常运维/运维手册.md)；
+  VPS 部署期教程已随阶段档案移出仓库（`../../KnowTrace-ops/archive/`）
 - 监控栈细节：`docs/16-stage3-observability.md`

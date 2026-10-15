@@ -5,7 +5,7 @@
 #
 # 对应文档：
 #   docs/日常运维/日常运维清单.md（第 160-164 行「日常频率建议」的每月部分）
-#   docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/文档/07-备份巡检与故障处理SOP.md
+#   KnowTrace-ops/archive/docs/KnowTrace-Workflow-VPS-部署学习-2026-09-06/阶段二/文档/07-备份巡检与故障处理SOP.md
 #
 # 每月清单（原文）：
 #   隔离恢复演练、依赖更新检查、故障记录复盘、文档更新
@@ -685,7 +685,8 @@ fi
 if action_enabled "archive-logs" MONTHLY_ARCHIVE_LOGS; then
     # 用 %Y%m 而不是 %Y-%m：同一个 LOG_ARCHIVE_DIR 下，记录骨架走的是 <年月>（见
     # daily-ops.sh 的 record 段），归档若走 <年-月> 就会出现 202609/ 与 2026-09/ 两个
-    # 描述同一个月的目录。项目自己的约定也是 YYYYMM（docs/日常运维/images/202609/）。
+    # 描述同一个月的目录。项目自己的约定也是 YYYYMM
+    # （历史上的巡检配图目录 `日常运维/images/202609/` 即此约定，该目录已于 2026-10-15 移出仓库）。
     archive_month="$(date -u '+%Y%m')"
     archive_path="$LOG_ARCHIVE_DIR/$archive_month"
     if [[ ! -d "$LOG_ARCHIVE_DIR" ]]; then
