@@ -1,18 +1,24 @@
 allowBuilds:
   esbuild: true
+  # unrs-resolver 是 eslint-plugin-import-x 的原生依赖（minor/patch 升级引入）。
+  # pnpm 11 默认拦截未批准的依赖构建脚本，**并且是硬错误而非警告**——
+  # 2026-10-15 实测：`pnpm install --frozen-lockfile` 报
+  # `[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: unrs-resolver@1.12.2`
+  # 后以 exit 1 结束，CI 的 quality / e2e 两个 job 双双挂在「Install dependencies」。
+  unrs-resolver: true
 overrides:
   ansi-regex@5.0.0: 5.0.1
   exceljs>uuid: 11.1.1
 minimumReleaseAgeExclude:
-  - '@next/env@16.3.1'
-  - '@next/swc-darwin-arm64@16.3.1'
-  - '@next/swc-darwin-x64@16.3.1'
-  - '@next/swc-linux-arm64-gnu@16.3.1'
-  - '@next/swc-linux-arm64-musl@16.3.1'
-  - '@next/swc-linux-x64-gnu@16.3.1'
-  - '@next/swc-linux-x64-musl@16.3.1'
-  - '@next/swc-win32-arm64-msvc@16.3.1'
-  - '@next/swc-win32-x64-msvc@16.3.1'
-  - next@16.3.1
+  - '@next/env@16.3.1 || 16.4.1'
+  - '@next/swc-darwin-arm64@16.3.1 || 16.4.1'
+  - '@next/swc-darwin-x64@16.3.1 || 16.4.1'
+  - '@next/swc-linux-arm64-gnu@16.3.1 || 16.4.1'
+  - '@next/swc-linux-arm64-musl@16.3.1 || 16.4.1'
+  - '@next/swc-linux-x64-gnu@16.3.1 || 16.4.1'
+  - '@next/swc-linux-x64-musl@16.3.1 || 16.4.1'
+  - '@next/swc-win32-arm64-msvc@16.3.1 || 16.4.1'
+  - '@next/swc-win32-x64-msvc@16.3.1 || 16.4.1'
+  - next@16.3.1 || 16.4.1
   - '@next/eslint-plugin-next@16.3.1'
   - eslint-config-next@16.3.1
