@@ -93,7 +93,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 - Linux / Ubuntu
 - Docker / Docker Compose
 - Nginx / Caddy
-- GitHub Actions / GHCR
+- GitHub Actions（4 个门禁 job；镜像在部署侧构建，不经注册表推送）
 - Makefile / Shell / Python / Ansible
 - 备份、恢复、SHA-256 完整性校验
 

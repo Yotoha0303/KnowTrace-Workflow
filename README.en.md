@@ -88,7 +88,7 @@ Four independent layers: **front-end interaction** (server-rendered App Router w
 - Linux / Ubuntu
 - Docker / Docker Compose
 - Nginx / Caddy
-- GitHub Actions / GHCR
+- GitHub Actions (four gate jobs; images are built on the deployment host, not pushed via a registry)
 - Makefile / Shell / Python / Ansible
 - Backup / Restore / SHA-256 verification
 
@@ -121,7 +121,7 @@ Every figure below is measured and can be checked in the linked source:
 
 Two of these are worth calling out, because both fix "looks healthy" failure modes:
 
-- **Runtime identity assertion**: four layers of health checks, 12 scrape targets, and 20+ alert rules can all be green while the running image is 37 commits behind. The deploy script therefore asserts the runtime revision and distinguishes "application code changed" from "only docs fell behind", so the alert is not trained into being ignored.
+- **Runtime identity assertion**: four layers of health checks, 12 scrape targets, and 29 alert rules can all be green while the running image is 37 commits behind. The deploy script therefore asserts the runtime revision and distinguishes "application code changed" from "only docs fell behind", so the alert is not trained into being ignored.
 - **Delivery, not firing**: the fault drill originally asserted only that Alertmanager received the alert. Because of `group_wait`, the whole group was cleared before first delivery, **no email was ever sent**, and the drill still reported PASS. The criterion now rests on the increment of `alertmanager_notifications_total{integration="email"}`.
 
 ## Deployment
