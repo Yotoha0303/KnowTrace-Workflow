@@ -289,7 +289,7 @@ flowchart LR
 
 实际落地时，业务规则集中在 **`src/features/*/service.ts`（10 个）**，
 而不是 `docs/06` 早期规划里写的根级 `services/`——那里现在只有
-subtree 引入的 Go 认证服务。**这一点正是 `AGENTS.md` 曾经写错的地方。**
+subtree 引入的 Go 认证服务。**这一点在早期的 AI 助手指令文件里写错过**（`AGENTS.md`，已于 `386a123` 移除）。
 
 ---
 

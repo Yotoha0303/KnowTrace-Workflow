@@ -79,7 +79,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 - OpenAI / DeepSeek Provider Adapter
 
 > AI 相关：运行时 provider 是 DeepSeek（及 OpenAI 兼容端点）。代码里的 `claude-*`
-> 是 CC-Switch 路由的**入站协议别名**，不代表使用 Claude 模型。见 `AGENTS.md`。
+> 是 CC-Switch 路由的**入站协议别名**，不代表使用 Claude 模型。见 `docs/22-团队视角-接手与协作.md` §3.3。
 
 ### 认证
 

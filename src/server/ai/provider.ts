@@ -2,7 +2,7 @@ import "server-only";
 
 // createAnthropic 是 CC-Switch 路由的**入站协议**（Anthropic Messages），不是
 // 「本项目使用 Claude」的证据：出站目标由 CC-Switch 转发决定，模型名以 claude-
-// 开头也只是协议别名要求。详见 features/ai-processing/schema.ts 与 AGENTS.md。
+// 开头也只是协议别名要求。详见 features/ai-processing/schema.ts。
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";

@@ -74,7 +74,7 @@ Four independent layers: **front-end interaction** (server-rendered App Router w
 
 > AI note: the runtime provider is DeepSeek (and OpenAI-compatible endpoints). The
 > `claude-*` strings in the code are inbound protocol aliases required by CC-Switch
-> routing — they do **not** mean this project uses Claude models. See `AGENTS.md`.
+> routing — they do **not** mean this project uses Claude models. See `docs/22-团队视角-接手与协作.md` §3.3.
 
 ### Authentication
 
