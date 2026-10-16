@@ -140,61 +140,174 @@ PostgreSQL 保持独立数据卷」。那个决定只说明了**分开部署**�
 
 ## 5. 后果
 
-### 必须一并解决的先决条件
+> ⚠️ **本节是 `sre-operator` 成对互审后重写的版本**（互审裁定 `需修改后再定`）。
+> 初稿本节有 **8 条 P0 缺口**，其中一条是**内部矛盾**（R1 与 §5.3 的收口判据互斥），
+> 另一条是**全篇无变更窗口**。逐条修正在下，每条注明改动理由。
 
-**`KT-GAP` 同族 / `ISSUE-S3-015`：先把 Go 集成测的 CI 门补上。**
-不补，则 §4 的每一道负向判据都**没有载体**——把方言改错，**单测照样全绿、集成测照样 skip**。
-判据：`go` job 里集成测试**真的执行**（CI 日志里非 skip 的用例数 > 0）。
+### 5.1 变更窗口（**初稿全篇缺失，互审 P0-1**）
 
-### 三处 SSOT 漂移必须同步收口
+**这是本 ADR 最严重的遗漏**：§6 自认 C 档、要求「变更窗口」，但初稿**全文无窗口评估**。
+
+**窗口 = 全站窗口，不是「认证不可用」。** 实测依赖链：
+
+| 服务 | 依赖 | 出处 |
+| --- | --- | --- |
+| `app` | `auth: condition: service_healthy` | `compose.yaml:158-162` |
+| `auth` | `auth-bootstrap: service_completed_successfully` → `auth-migrate` → `auth-mysql` | `compose.yaml:108-112,86-88,72-74` |
+
+⇒ **`auth` 起不来 ⇒ `app` 也不启动 ⇒ 全站不可用。**
+
+**同链路已有先例数字**：`deploy/systemd/knowtrace-workflow-offsite-backup.service:7-8` 记载
+`docker compose stop app auth` 造成 **app 约 24 秒 / auth 约 13 秒**计划外停机。
+**⚠️ 该数字是「同链路先例」，不是本次窗口的实测值**——本次窗口须在有 Docker 的环境空跑实测
+（只改镜像名与 `DB_HOST`，`time docker compose up -d --wait`，记录 `app` ready 墙钟）。
+**未实测前，本 ADR 不给窗口数字**（D1：不得把推测写成计划值）。
+
+**窗口要素（与变更单一起定；此处只定「必须有什么」）**：
+
+| 要素 | 要求 |
+| --- | --- |
+| 时段 | 对齐既有低峰排班 —— `deploy/systemd/knowtrace-workflow-backup.timer` 的 `OnCalendar=*-*-* 03:20:00 Asia/Shanghai` |
+| **中止条件** | `/readyz` 非 200，**或** `KnowTraceAuthNotReady` 告警 firing ⇒ **立即中止并回退**，不得「先上再修」 |
+| 授权人 | **人工**（C 档不可由 AI 自批） |
+| 回退时限 | 必须在窗口内可完成 —— 见 §5.5 |
+
+### 5.2 先决条件（初稿只列 1 条，互审 P0-7）
+
+**两条并列，缺一不得开工**：
+
+**① 测试基建**：`ISSUE-S3-015` —— 先把 Go 集成测的 CI 门补上（`ci.yml:118-121` 自述不配
+`TEST_DATABASE_DSN`；`testutil/mysql.go:91` `t.Skipf`）。不补，§5.6 的每条负向判据**都没有载体**。
+判据：`go` job 里集成测试**真的执行**（CI 日志非 skip 用例数 > 0）。
+
+**② 备份链**：**先在新库上产出并验收一份可恢复归档**，然后才允许改 `compose.yaml`。
+反序的代价是本 ADR 初稿自己写的「回滚能力在迁移那一刻消失」。
+现状：`scripts/linux/backup-all.sh:170-176` 备份期间 `stop --timeout 30 app auth` 再恢复运行时
+（`QUIESCE_WRITES=1`，见 `deploy/systemd/knowtrace-workflow-backup.service:14`）——
+**这条链本身要在 PG 上重建并重测**。
+**验收判据必须含一次真实登录**（见 §5.7）。
+
+### 5.3 三处 SSOT 漂移必须同步收口（初稿第 1 行与 §5.5 互斥，**已修正**）
 
 | # | 漂移 | 收口判据 |
 | --- | --- | --- |
-| 1 | MySQL 版本 pin 4 处冲突（8.0 / 8.4） | 迁移后应**只剩一个 PG 版本值**（`postgres:18-alpine`），`grep -rn "mysql:8\." ` **应为空** |
+| 1 | MySQL 版本 pin 4 处冲突（8.0 / 8.4） | 见下 ⚠️ |
 | 2 | 排序规则不一致（`_0900_ai_ci` vs `_unicode_ci`） | 统一到 PG 的显式 `COLLATE`，并在文档写明 |
 | 3 | `.env.goose.example` 的 `GOOSE_DRIVER=mysql` 与写死 `127.0.0.1:3306` | 随驱动一并改 |
 
-### 运维链必须同步改（**回滚能力依赖它**）
+> ⚠️ **修正一处内部矛盾（互审 P0-2）**：初稿把第 1 行的判据写成
+> 「`grep -rn "mysql:8\."` **应为空**」，而初稿 §5.5 的 R1 又要求「**MySQL compose 定义不得先删**」。
+> **两者互斥** —— 前者要求删掉 `auth-mysql`，后者要求留着它。
+> **⇒ 正式判据改为**：`grep -rn "mysql:8\."` **只允许命中「回滚基线」一处**，
+> 且该处必须在一个**显式标注为回滚用途**的 compose 文件（或 profile）里。
+> **回滚优先于「清零」**：观察期结束、回滚窗口关闭后，才允许彻底清零。
 
-备份/恢复脚本全部绑死在 MySQL（`scripts/backup-auth.ps1`、`scripts/linux/backup-all.sh` 的
-`mysql_counts()`、`verify-restore.sh`、`services/go-user-system/scripts/ops/*`、`monthly-ops.sh`）。
-**必须在迁移的同一个变更里改完**——否则**回滚能力在迁移那一刻消失，而那正是最需要它的时候**。
-其中 `verify-restore.sh:201` 的逐表行数 `cmp` 判据与 `backup-auth.ps1` 的
-「容器内 sha256 → cp → 主机 sha256 → manifest」四步校验**必须保留**（它是本项目唯一挡住
-「0 字节备份」的机制——见 `AGENTS.md` §8.1 ①）。
+### 5.4 运维链必须同步改（初稿漏 `external` 卷等，互审 P0-2 / P0-4 / P1 系列）
 
-### 回滚策略（**三档，且必须演练**）
+**初稿只列了备份/恢复脚本，漏了卷与一批巡检/监控点位。补全如下。**
 
-数据源已丢，故回滚比常规换库**简单**，但仍有档：
+**（a）`external` 卷 —— 初稿完全未提**
 
-| 档 | 动作 | 前置 |
+```text
+compose.yaml:173-175   auth_mysql_data: { name: go-user-system_mysql_data, external: true }
+scripts/linux/prepare-host.sh:75   volumes=(go-user-system_mysql_data go-user-system_redis_data)
+scripts/install.sh:225             for v in go-user-system_mysql_data ...
+scripts/start-all.ps1:26           同两个卷名写死
+```
+
+**两个失败方向都不报错**：新机器上 `prepare-host.sh:84-89` 仍会创建 `go-user-system_mysql_data`
+⇒ 留一个**永不挂载的孤儿卷**；而真正在用的 PG 卷若没进 `:75` 的数组 ⇒ `compose up` 直接
+`external volume ... not found`（`prepare-host.sh:12` 已记载过同形事故）。
+**转 PG 必须同时改这四处，并复测三脚本的幂等性**（其幂等判据是 `docker volume inspect`，
+`prepare-host.sh:78` —— 卷名一改，判定分支就换）。
+
+**（b）备份/恢复链（初稿已列，但深度不够）**
+
+`scripts/backup-auth.ps1`、`scripts/linux/backup-all.sh` 的 `mysql_counts()`、`verify-restore.sh`、
+`services/go-user-system/scripts/ops/*`、`monthly-ops.sh`。**必须同一变更改完。**
+
+两处**必须保留、但校验器必须换**的机制：
+
+| 机制 | 位置 | ⚠️ 转 PG 后的变化 |
 | --- | --- | --- |
-| R1 应用回滚 | `git revert` 本次改造 → 用 MySQL 镜像重建空库 → `auth-bootstrap` 重放管理员 | MySQL compose 定义**不得先删** |
-| R2 库回滚 | 无旧数据可回 ⇒ 等同 R1；若观察期内已产生数据，按新建库的备份还原 | 观察期内的备份链已改好 |
-| R3 冷备 | 迁移前对**空/新库**做一次基线备份 | — |
+| 归档强制必需组件 | `verify-restore.sh:74-86` `required_file` 含 `mysql.sql` / `mysql-counts.tsv`，`[[ -s ]] \|\| die` | 改名要**同改备份端生产者**（`backup-all.sh:188-192`）与 `:95-97` 的镜像预检，否则演练**永远不能通过** |
+| 四步校验 | `backup-auth.ps1:43-54` 执行 → 容器内 sha256 → `cp` → 主机 sha256 比对 | **`-Fc` 是二进制**：`grep` 不可用、`-s` 只挡 0 字节 ⇒ **必须补 `pg_restore --list` 级别的可解析性校验**，且**在容器内算 sha 的同时算**。否则**被截断但非空的 dump 四步全绿**（`AGENTS.md` §8.1 ① 的 PG 版） |
 
-> **判据：回滚方案没演练过 = 没有回滚方案。** 本项目的 `verify-restore.sh` 已有
-> 「在无端口、无生产卷的临时容器里恢复并比对」的形态，本次演练复用它。
+> 初稿说「`verify-restore.sh:201` 的 `cmp` 与四步校验**必须保留**」——
+> **这句是对的，也是初稿最有价值的一句**；但它没说清「保留」不等于「可用」：
+> 二进制格式下**校验器必须换**。
 
-### 验证判据（可证伪，正负成对）
+**（c）巡检 / 监控 / 文档点位（初稿遗漏）**
 
-| # | 正向 | **负向（注入什么必须失败）** |
+| 面 | 位置 | 失效形态 |
 | --- | --- | --- |
-| 1 | `/readyz` 返回 200 且真实登录一次成功 | 把 `DB_HOST` 指向不存在的服务 ⇒ **必须 fail closed**（`ADR-0013`：不得降级为匿名） |
-| 2 | `roles=2 / permissions=6`，`admin` 关联 6 个权限、`user` 关联 3 个 | 删掉一条 `role_permissions` ⇒ **权限校验必须失败** |
-| 3 | 全仓 `grep -rn "mysql" -- services/go-user-system/` 只剩历史文档 | **`grep` 不是判据**（§3.2）。真判据：在 `testutil` 里写一条 MySQL 专有语法 ⇒ **CI 必须红** |
-| 4 | 大小写：建 `Alice` 后再建 `alice` | MySQL 下**必须被唯一键拒绝**；PG 下**必须复现同一行为**（否则唯一性语义已被静默放宽） |
-| 5 | 时间：写入一条 `expires_at` | 在**两个不同时区**下读回 ⇒ **必须得到同一绝对时刻**（这是 §2 时区行的判据） |
+| 服务清单 | `scripts/ops/ops.conf.example:95`、`daily-check.sh:350`、`daily-ops.sh:257`、`log_analyzer.py:409` | **会响**（`KnowTraceOpsCheckFailed`，`knowtrace-workflow.yml:210-211`）—— 好消息；坏消息是与真故障混淆 |
+| 前缀匹配 | `scripts/ops/lib/ops-common.sh:333` | 靠「`auth` 不误配 `auth-mysql`」的**命名假设** ⇒ 服务名一改即失效，**且不响** |
+| Runbook 正文 | `docs/16-stage3-observability.md:328` 步骤文字含「检查 auth、**MySQL**、Redis readiness」 | 锚点检查器（`check-runbook-anchors.mjs:38` 单文件写死 + `:92` 要求引号）**看不见正文** ⇒ **改错不响** |
+| 监控指标名 | `scripts/linux/verify-observability.py:112,212` 断言 `go_user_system_readiness == 1` | 指标名若变，自检失败（会响，但仅在有人跑时） |
+| `monthly-ops` 镜像预热 | `scripts/ops/scripts/monthly-ops.sh:352` `for image in "postgres:18-alpine" "mysql:8.0" ...`；`:339-347` 内存阈值 500MiB **按三容器标定** | 不改 ⇒ 演练在「文件缺失」态下继续；阈值不重算 ⇒ **不响** |
+| 凭证扫描 | `security-check.sh:388` `for key in MYSQL_ROOT_PASSWORD JWT_SECRET ...` | 不改 ⇒ 查旧键、**不查新键** ⇒ 静默少一道防线 |
+| 日志脱敏 | `log_analyzer.py:79` 正则 | 新 DSN `postgres://user:pass@host` **不匹配**该正则 ⇒ **凭证明文留在日志里** |
+| 架构图 / 运维手册 | `docs/24-architecture-diagrams.md:31,51,74,241`、`docs/日常运维/运维手册.md:112` | 不改 ⇒ 过时事实（D4） |
+| 异地备份 | `scripts/linux/offsite-backup.sh:41-44` | **天然免疫**（按 `knowtrace-*.tar.gz` 扫，不按内容）—— 但**可恢复性**仍取决于恢复端有旧镜像（见 (b)） |
 
-### 未决（**不在本 ADR 范围内**）
+### 5.5 回滚策略（初稿三档，**互审修正**）
+
+初稿说「数据源已丢 ⇒ 回滚更简单」。**部分成立，但漏了真正决定代价的变量：新产生的数据 + 观察期。**
+
+**数据不会少**：`internal/dao/user.go:52` `auth_version = auth_version + 1` —— **每次登出/改密都是一次写**；
+`refresh_tokens` 随每次刷新签发增长（`migrations/00003`）。
+
+⚠️ **且本仓没有可依的 RTO/RPO**：`verify-restore.sh:242-248` 的输出**只有计数、无计时**；
+全仓运维脚本 `git grep "RTO|RPO"` → **0 命中**。⇒ **ADR 不得给出观察期数字**，除非先做计时实测。
+
+| 档 | 动作 | 前置 | 代价（**新增列**） |
+| --- | --- | --- | --- |
+| **R1** 应用回滚 | `git revert` → 用 MySQL 镜像重建空库 → `auth-bootstrap` 重放管理员 | **§5.3 修正后**：回滚基线 compose 必须在观察期内保留 | **观察期内新产生的会话与会话吊销全部丢失**（`refresh_tokens` / `auth_version`）。用户表现为「新会话失效」，**且无日志提示** |
+| **R2** 库回滚 | 同 R1；若观察期内已产生数据，按新建库的备份还原 | 备份链已改好（§5.2 ②） | 需一次恢复演练；**未经演练的恢复 = 没有恢复** |
+| **R3** 冷备 | 迁移前对空/新库做基线备份 | — | — |
+
+**观察期（新增，初版缺失）**：时长**待实测**；测量方法 = 用本仓既有形态
+`tests/isolated-v2-recovery.test.ts:311,435,460-462,651`（empty-instance restore / trust downgrade /
+same-actor idempotency）**对齐** `verify-restore.sh`，并在其上**加计时**。
+（该测试当前**不在服务器上跑，也不在备份链上** —— 本 ADR 把它列为对齐目标。）
+
+> **判据：回滚方案没演练过 = 没有回滚方案。**
+
+### 5.6 验证判据（初稿 5 条有 4 条可假绿，**互审 P0-6 逐条修正**）
+
+| # | 修正后 | **注入什么会暴露它（初稿的漏洞已补）** |
+| --- | --- | --- |
+| 1 | `/readyz` 200 且**真实登录一次**成功 | 初稿「把 `DB_HOST` 指向不存在的服务」**在 compose 下不可执行**（`depends_on` 会先拦，容器根本不创建 —— **「起不来」与「fail closed」观测同形**）。**改为**：`DB_HOST` 指向**可解析但不可达**的地址（如 `127.0.0.1:1`）或**运行中停 PG**，断言 `/readyz` → 503 且 `go_user_system_readiness == 0`（`internal/handler/health_handler.go:82-84,91-94,103-106`）。**另注**：`migrate up` 走 `pkg/database/migration.go`，**不经 GORM**，是另一条代码路径，需单独测 |
+| 2 | 权限：**指明**测 `admin` 的**哪一个**权限码 + **哪一个**接口 + 期望响应码 | 初稿「删掉一条 `role_permissions`」**可假绿**：删一条不服务于 admin 的映射，admin 路由仍全通 ⇒ 判为 PASS |
+| 3 | **迁移文件本身**成为被测对象：空库跑 `migrate up` 必须成功 | 初稿「在 `testutil` 写一条 MySQL 语法」在重写 `testutil` 后**已无载体**；且它抓不到 `migrations/` 里的方言残留 |
+| 4 | **显式选定目标语义**：`CREATE UNIQUE INDEX ... (lower(username))` ⇒ **`Alice` 与 `alice` 必须冲突** | 初稿「MySQL 下必须被拒绝」**不可执行**（MySQL 已不存在）；且它把「PG 下允许」读作「复现同一行为」，而 ADR 自己又说那是「静默放宽」—— **判据方向与决策目标互相矛盾** |
+| 5 | 断言**落库值**，不是往返值：`SELECT now()` 与 `date -u` 差值 < 1s；**并在宿主 `TZ` 与容器 `TZ` 不一致的两种组合下各跑一次** | 初稿「写一条再读回」**往返自洽 ⇒ 抓不到平移**：源端时区声明错（宿主 UTC / 容器 `Asia/Shanghai`）时，**往返完全一致而全部时刻平移 8 小时** —— 正是 §2 自称「全表最危险的一行」的那个风险 |
+
+### 5.7 业务级恢复验收（初稿缺失，互审 P0-8）
+
+`AGENTS.md` §2 的 08 环准出要求「**实测 RTO/RPO + 业务级可用性核验**」，其 §3 明确
+**「不得只给数据层校验（checksum / 行数）」**。本仓现状：
+
+- `verify-restore.sh:242-248` 输出**只有计数**：`RESTORE_VERIFY=PASS / POSTGRES_TABLES / MYSQL_TABLES / REDIS_KEYS_* / UPLOAD_FILES`。
+- `docs/日常运维/部署清单与验收.md:51` 的验收定义**也是纯数据层**。
+
+**注入什么会暴露它**：一份**密码哈希列全为 NULL** 的 dump，`COUNT(*)` 相等、`SHA256SUMS` 自洽
+⇒ `cmp` 与 `-s` **全过**；人拿着「演练 PASS」以为能恢复，**真恢复后没人能登录**。
+
+**⇒ 本次必须补一条**：恢复后**用真实账号登录一次**。判据见 `scripts/linux/verify-business-acceptance.sh`
+（**该脚本存在，但本 ADR 未核实其覆盖面** —— 列为 §5.8 待核）。
+
+### 5.8 未决（**不在本 ADR 范围内**）
 
 1. **`subtree` 去留**：接受长期冲突 / 转 fork / 把改造做成上游补丁推回。**+2~5 人·天外加上游协调**。需**另立 ADR**。
 2. `users.id = 1` 的保号：主应用以 `created_by_id = 'go-user:1'` 引用（`drizzle/0020` 等），跨库**无外键**。
    重建后**必须实测确认**新 `auth-bootstrap` 建出的管理员 `id` 确为 `1`，否则那批内容会**静默换主**。
-3. `PG 18` 上 `COLLATE "und-x-icu"` 的可用性——**待实测**。
-4. 生产容器的 `TZ` / `/etc/localtime`（`compose.yaml` 的 auth 段**没有设 `TZ`**）——它决定时区映射的源端声明。
-
----
+3. `PG 18` 上 `COLLATE "und-x-icu"` 的可用性 —— **待实测**。
+4. 生产容器的 `TZ` / `/etc/localtime`（`compose.yaml` 的 auth 段**没有设 `TZ`**）—— 它决定时区映射的源端声明，也是 §5.6 判据 5 的输入。
+5. **`scripts/linux/verify-business-acceptance.sh` 的覆盖面未核实**（它存在已在 `git ls-files` 命中，但**未读其内容**，也未核 CI 是否调用）—— **不读就断言 = D1 违规**，故列为待核。
+6. **主应用侧是「本地验签」还是「逐请求回调 auth」**：`src/features/auth/go-user-system.ts:92-96` 显示主应用持有 `AUTH_SERVICE_URL`；在 `src/` 中**未找到**本地验签。若为回调校验，则 **auth 重启期间中间件层即实时 5xx**，窗口代价**重于** §5.1 引用的「24 秒整机重启」。**待核**。
+7. 实际停机窗口时长：**本机无 Docker，无法实测**（见 §1.1）。需在有 Docker 的环境空跑。
 
 ## 6. 分档与流程（**本仓第一次走正式档位**）
 
@@ -222,7 +335,24 @@ PostgreSQL 保持独立数据卷」。那个决定只说明了**分开部署**�
 - **本 ADR 为 `proposed`**——**它还没有落地**。按门禁：**01 环准出（本 ADR accepted）之前，不得开始 02 环的实现**。
 - 本文是**当前维护者第一次亲自走完档位流程**（仓内有过 C 档决策的 ADR，但不是以这次的方式产生的）。
 ⇒ 过程中暴露的模板缺口应回写 `docs/adr/README.md` 或登记编号。
-- 建议的下一步顺序（**每步一个可独立验证的提交**）：
+### 互审记录（`2026-10-16`，按 §4.0「架构变更须成对互审」）
+
+| 角色 | 裁定 | 处置 |
+| --- | --- | --- |
+| `sre-operator`（运维/可靠性侧） | **`需修改后再定`** | **本节 §5 已按其 8 条 P0 重写**（见 §5.1–§5.8，每条注明改动理由） |
+| `system-architect`（架构侧） | *（进行中／若未回则以 `sre` 侧为准）* | — |
+
+**互审方指出的最危险一处**（原文）：「**没有变更窗口，却把回滚能力建立在一条尚未改造的备份链上——而这条链一改错就是静默的。**」
+三点合起来是一个自洽的失败剧本：① 窗口 = 全站窗口而 ADR 未提；② 保护它的唯一机制是备份链而 ADR 只说「必须一起改」（**是意图不是判据**）；③ 出问题要回滚时，R1 的前置与 ADR 自己的收口判据**互斥**。
+**这一处不修，前面每一道技术判据即使全绿，也不能证明变更安全** —— 因为它们全部作用于「迁移做对了」，而这里的风险是「迁移做错了、且没人知道、且退不回来」。
+
+**⇒ 逐条处置**：P0-1 → §5.1；P0-2 → §5.3 + §5.4(a)；P0-3 → §5.5；P0-4 → §5.4(b)；P0-5 → §5.4(b) 表第二行；P0-6 → §5.6；P0-7 → §5.2；P0-8 → §5.7。**全部已落。**
+
+### 下一步顺序（**每步一个可独立验证的提交**）
+
+> ⚠️ 初稿的第 1 步只是「补 CI 门」。**互审后改为：§5.2 的两条先决条件（测试基建 + 备份链）都完成，才允许开始第 2 步。**
+
+
   1. 补 Go 集成测的 CI 门（§5 先决）
   2. 重写 6 个 goose 迁移为 PG 方言 + 空库跑通
   3. 驱动与 DSN（含 `loc=Local` 的时区对齐）
