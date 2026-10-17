@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -148,6 +149,61 @@ func TestOpenMySQLInitializesTestDatabase(t *testing.T) {
 		t.Fatalf("expected dsn fake-test-dsn, got %s", gotDSN)
 	}
 	CloseMySQL(t, db)
+}
+
+// skipRecorder 记录 OpenMySQL 是否调用了 Skip/Skipf，但**不真的 skip**。
+//
+// 为什么需要它：真实的 `t.Skip()` 会让调用方用例变成 SKIP，而 SKIP 在 CI 里是绿的
+// （`go test` 退出码 0）。也就是说，「DSN 配了却仍然 skip」这件事，
+// 只用真实 *testing.T 断言是**观测不到**的——它恰恰会伪装成正常。
+// 把它换成 ERROR 级别的失败，才让 CI 的 go job 红。
+type skipRecorder struct {
+	testing.TB
+	reason string
+}
+
+func (r *skipRecorder) Skip(args ...interface{}) {
+	r.reason = fmt.Sprint(args...)
+}
+
+func (r *skipRecorder) Skipf(format string, args ...interface{}) {
+	r.reason = fmt.Sprintf(format, args...)
+}
+
+func (r *skipRecorder) SkipNow() {
+	r.reason = "SkipNow"
+}
+
+// TestOpenMySQLDoesNotSkipWhenDSNIsSet 是 CI 集成测门的反向守卫：
+// TEST_DATABASE_DSN 已配时，OpenMySQL 必须连接，不得走 skip 分支。
+// 若有人把 skip 条件改错（例如改成只看数据库名、或漏掉 TrimSpace 后的空判断），
+// 本用例会红——而集成测本身会静默 SKIP、CI 照旧全绿。
+func TestOpenMySQLDoesNotSkipWhenDSNIsSet(t *testing.T) {
+	oldOpenMySQLDB := openMySQLDB
+	t.Cleanup(func() {
+		openMySQLDB = oldOpenMySQLDB
+	})
+
+	var opened bool
+	openMySQLDB = func(string) (*gorm.DB, error) {
+		opened = true
+		return openTestutilGormDB(t), nil
+	}
+
+	t.Setenv(TestDatabaseDSNEnv, "fake-test-dsn")
+
+	recorder := &skipRecorder{TB: t}
+	db := OpenMySQL(recorder)
+	t.Cleanup(func() {
+		CloseMySQL(t, db)
+	})
+
+	if recorder.reason != "" {
+		t.Fatalf("TEST_DATABASE_DSN 已配置，OpenMySQL 却 skip 了：%s", recorder.reason)
+	}
+	if !opened {
+		t.Fatal("TEST_DATABASE_DSN 已配置，OpenMySQL 却没有尝试连接")
+	}
 }
 
 func TestDefaultOpenMySQLDBReturnsConnectionError(t *testing.T) {

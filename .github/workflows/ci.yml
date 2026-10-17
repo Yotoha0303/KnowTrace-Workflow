@@ -105,6 +105,34 @@ jobs:
     defaults:
       run:
         working-directory: services/go-user-system
+
+    # 2026-10-17（ISSUE-S3-015 / ADR-0019 §5.2 ①）：本 job 原先**不配 TEST_DATABASE_DSN**，
+    # 集成测试全部 t.Skipf（internal/testutil/mysql.go:89-92）——「CI 全绿」里没有任何一条
+    # 来自真实数据库，ADR-0019 §5.6 的每条负向判据都没有载体。现在补上了。
+    #
+    # ⚠️ 这道门**当前只覆盖 MySQL 方言**：testutil 硬绑 gorm.io/driver/mysql（PG 版属 M4）。
+    #    它**不覆盖** PG 迁移的方言残留（SET FOREIGN_KEY_CHECKS / SELECT DATABASE() / GET_LOCK）。
+    #    **「集成测绿了」≠「PG 迁移可验」**——别把这道门的绿色当成迁移的准入证据。
+    # ⚠️ 镜像照抄下面 e2e job 的 mysql:8.0（同一份配置，不另起一套）；
+    #    MySQL 版本 pin（8.0 vs 8.4）的收口与 #26（ISSUE-S3-016）同批处理。
+    # ⚠️ 库名必须是 go_user_system_test：testutil 的 assertTestDatabase 拒绝库名不含
+    #    "test" 的库（internal/testutil/mysql.go:204），照抄 e2e 的 go_user_system 会直接 t.Fatalf。
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: knowtrace-root
+          MYSQL_DATABASE: go_user_system_test
+          MYSQL_USER: go_user_system
+          MYSQL_PASSWORD: knowtrace
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -117,10 +145,44 @@ jobs:
 
       # 与 Makefile 的 check 目标、CONTRIBUTING 的「提交前验证」保持一致。
       # 这个 job 之前缺失，导致认证服务的 26 个测试文件不在任何自动化门里。
-      # 不配 TEST_DATABASE_DSN：集成测试会 t.Skipf（见 internal/testutil/mysql.go:91），
-      # 单元测试照常执行。要跑集成测试需要另配 MySQL service。
+      #
+      # DSN 形态与 pkg/database/db.go:47-53 的构造方式一致（gorm.io/driver/mysql 的
+      # mysql.Open 直接吃这个串）；库名含 "test" 是硬要求——见上面 service 块。
+      # `-v` 让 PASS/SKIP 落到日志里，下面那步要 grep 它。
+      # `set -o pipefail` 不可省：GitHub Actions 的 bash 默认带 `-e` 但**不带 pipefail**，
+      # `go test … | tee` 会把测试失败的退出码吞成 tee 的 0。
       - name: Run Go tests
-        run: go test ./...
+        env:
+          TEST_DATABASE_DSN: "go_user_system:knowtrace@tcp(127.0.0.1:3306)/go_user_system_test?charset=utf8mb4&parseTime=True&loc=Local"
+        run: |
+          set -o pipefail
+          go test ./... -v 2>&1 | tee /tmp/go-test.log
+
+      # 证伪：证明集成测试**真的执行了**，而不是配了 DSN 却被 skip 掉。
+      # 为什么必须有这一步：`go test` 在用例 skip 时**退出码仍是 0**，
+      # 于是「DSN 配错 → 全部 SKIP → CI 全绿」与「集成测真跑」在观测上完全同形。
+      # 正负两半：无 SKIP 的 Integration 用例 + 至少一个 PASS 的 Integration 用例。
+      # 日志文件缺失也失败（fail-closed）——那意味着上一步根本没跑成。
+      - name: Assert the MySQL integration tests actually ran
+        run: |
+          set -euo pipefail
+          log=/tmp/go-test.log
+          if [[ ! -f "$log" ]]; then
+            echo "找不到 $log —— 上一步没留下日志，无法判定集成测试是否执行"
+            exit 1
+          fi
+          skipped="$(grep -cE '^--- SKIP: Test[A-Za-z0-9_]*Integration' "$log" || true)"
+          passed="$(grep -cE '^--- PASS: Test[A-Za-z0-9_]*Integration' "$log" || true)"
+          echo "集成测试实际通过 ${passed} 个，被跳过 ${skipped} 个"
+          if [[ "$skipped" != "0" ]]; then
+            echo "存在被 SKIP 的集成测试："
+            grep -E '^--- SKIP: Test[A-Za-z0-9_]*Integration' "$log"
+            exit 1
+          fi
+          if [[ "$passed" -lt 1 ]]; then
+            echo "没有任何集成测试被执行 —— 这道门当前是空的"
+            exit 1
+          fi
 
   # 认证服务的 React 前端（`services/go-user-system/frontend`）。
   # 与上面 go job 同形：**这个 job 之前也不存在**，导致它的 7 个 vitest 文件
