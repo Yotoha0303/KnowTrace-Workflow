@@ -1,5 +1,17 @@
 #!/usr/bin/env node
-// CI 门：证明 Go 的 MySQL 集成测试**真的执行过**，且执行的是**真实数据库**。
+// CI 门（第一道）：从 `go test -json` 日志判断集成测「看起来」跑过、且「看起来」连的是真实数据库。
+//
+// ⚠️ 本门是**跳线（tripwire），不是证据（proof）**。它能证明的只有一件事：
+//   「测试进程自己在日志里说了：有 8 条集成用例 PASS、且各打出了一行真实库指纹」。
+// 它**不能**证明这些话是真的——qa 已实测（2026-10-17，F1/F2/F3 三个形态）：
+//   在任意测试体内写**一行** `t.Log("REAL_DB_FINGERPRINT …")` 或 `fmt.Println(…)`，
+//   `go test -json` 就会把这条 Output 事件归因到那条测试，
+//   于是「假用例补上被删 / 被 skip 让出的槽位」原样复活，甚至可以在**零连库**下全绿。
+//   **攻击成本 = 一行日志。**
+// ⇒ 禁止把本门的绿色引用为「集成测真的连过库」的证据。真证据在第二道门：
+//   `scripts/check-go-integration-server-witness.mjs`（读 MySQL 服务端 general_log，
+//   测试进程够不着那个账本）。本门防的是**误配 / 疏忽**（DSN 没配、用例被无意跳过、
+//   fake driver 被误接上），防不住蓄意伪造。
 //
 // 用法：node scripts/check-go-integration-gate.mjs <go-test.jsonl>
 //
@@ -21,11 +33,21 @@
 //      注释里写着「不计」，代码没有实现这句话。假槽位正好吃掉「删/改名一条真用例」降下来的那 1 个，
 //      于是「删掉一条真用例」仍然绿（qa 真跑证明）。
 //      修法：判据从「单值计数」改为「**按 Test 归因的集合**」——见下方 MIN 常量与判据 ③。
+//      残余（G1-R1，**结构性、本门修不了**）：归因来自测试进程自己的日志，所以**一行日志就能伪造**。
+//      qa 的 F1/F2/F3 已实测。本门因此**降格为跳线**（见文件头）；真证据在服务端见证门。
+//   G1-R3 「门红」的两种原因必须能分开报：**用例被删 / 改名 / skip** 与 **用例偶发失败**
+//      在退出码上同形，但修法完全不同。判据 ③ 现在三分（判据里逐条对应）：
+//      (a) 有指纹、且在日志里有一条属于它的红（fail 事件，或顶层且含 Integration 的 skip）
+//          ⇒「用例确实跑过但没通过」（偶发失败 / 真失败）；
+//      (b) 有指纹，但既无 PASS 也无 FAIL / skip 事件 ⇒ 改名或删除（改名后名字不再含 Integration，
+//          ② 抓不到它，它也不会产生 fail 事件）；
+//      (c) 一条孤儿指纹都没有 ⇒ 打指纹的用例根本没跑起来（-skip / 整条删除 / DSN 没配）。
 //   G5 上一版把**任何**包级 fail 都当构建失败，实测 `t.Fatalf` 的包级事件
 //      `{"Action":"fail","Package":"…/dao","Elapsed":1.6}`（**无 FailedBuild 字段**）
 //      被报成「编译错误——集成用例根本没跑起来」，方向对（红）但结论错（把人引去查编译）。
 //      修法：包级 fail **必须**有 FailedBuild 字段才判构建失败；否则归入「用例失败」族。
 //      同时去重：`build-fail` 事件与带 FailedBuild 的包级 fail 是**同一次**编译失败，只报 1 条。
+//   G5-R1 上一版注释把 ImportPath 写成固定形态，与实测不符；已按两种实测形态改写（见 normalizeImportPath）。
 //
 // 退出码：0 = 门通过；1 = 门不通过（无法证明它要证明的事）；2 = 用法/输入错误。
 
@@ -35,6 +57,10 @@ import { readFileSync } from "node:fs";
 //
 // 口径：**带自有指纹**（REAL_DB_FINGERPRINT 事件被 go test 归因到这条测试名下）
 // 且 PASS 的顶层、名字含 Integration 的用例数。
+//
+// ⚠️ 「指纹」只说明**测试进程打印了这一行**，不说明它真的连过库（见文件头的 G1-R1）。
+// 下界 8 是「正常的正向运行里应当有 8 条」的记账值，不是服务端事实；
+// 服务端事实由 scripts/check-go-integration-server-witness.mjs 给。
 //
 // 为什么是 8：本机隔离 MySQL 8.4.8 上真实跑一遍，指纹行按 Test 去重后是 8 条——
 //   $ node -e "const fs=require('fs');const s=new Set();for(const l of fs.readFileSync(process.argv[1],'utf8').split(/\r?\n/)){let e;try{e=JSON.parse(l)}catch{continue}if(e.Action==='output'&&typeof e.Output==='string'&&e.Output.includes('REAL_DB_FINGERPRINT ')&&e.Test)s.add(e.Test.split('/')[0])}console.log(s.size)" go-test.jsonl
@@ -51,6 +77,10 @@ import { readFileSync } from "node:fs";
 //   名字里带 Integration 的顶层用例一共 **9** 条，第 9 条是
 //   testutil/mysql_test.go 的 TestAcquireIntegrationLockSucceeds —— 它走自注册的 fake driver，
 //   **不产生指纹**，因此在新口径下**自然被排除**（不需要任何名字特判）。
+//
+// ⚠️ **这句话只剩「那条测试碰巧没打日志」这个偶然事实**（qa 的 G1-R1 实测）：
+// 在它里面加一行 t.Log("REAL_DB_FINGERPRINT …")，它就会重新计入。
+// 所以「fake 用例自然出局」**不是判据的性质，是当前测试代码的性质**。
 //
 // 取舍（已知且接受）：加用例不会红（>= 不是 ==），删到 8 以下才红。
 // 不写成「== 用例总数」是因为那个数要跟着仓库变，门会变成「每次加用例都得改门」；
@@ -91,12 +121,18 @@ function topLevelTestName(name) {
 // PASS」，而 fake 的 TestAcquireIntegrationLockSucceeds 正好补上被改名用例让出的那个槽位，
 // 于是「改名 + skip」仍然绿（qa 真跑证明）。现在 ③ 的口径换成**指纹归因的集合**，
 // 假槽位不再存在，这句话才第一次成立。
+// ⚠️ 但它成立的**前提是「没人往 fake 用例里加一行指纹日志」**（G1-R1）——那正是本门挡不住的。
+// 判据 ② 与 ③ 互兜底，挡的是**误操作**，不是**意图**。
 function isIntegrationTestName(name) {
   return typeof name === "string" && name.includes("Integration");
 }
 
-// `build-fail` 的 ImportPath 形如 `pkg [pkg.test]`；包级 fail 的 FailedBuild 同形。
-// 去掉方括号里的测试二进制后缀，好让**同一次**编译失败的两个事件归并为 1 条。
+// 编译失败时两个事件里的 ImportPath 实测有**两种**形态（2026-10-17 本机复测）：
+//   ① 包自带的测试二进制编译失败：`go-user-system/internal/dao [go-user-system/internal/dao.test]`
+//      （`build-output` 与 `build-fail` 的 ImportPath、包级 fail 的 FailedBuild 字段同形）；
+//   ② 被依赖的包编译失败：`go-user-system/internal/dao`（**无方括号**，且 ImportPath 是出错的那个包）。
+// 上一版注释把 ① 写成了唯一形态，与 qa 实测（`pkg.test`，无方括号）不符——**那只是它当时注入的位置不同**，
+// 不是事实冲突。下面两种都处理：去掉方括号里的测试二进制后缀，好让**同一次**编译失败的两个事件归并为 1 条。
 function normalizeImportPath(path) {
   return String(path).replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
@@ -148,7 +184,9 @@ function main(argv) {
   const fingerprintsByTest = new Map(); // 顶层测试名 -> 指纹原文（Set 语义，重复只留第一条）
   const unattributedFingerprints = []; // 有指纹但没有 Test 字段（无法归因）
   const skipped = [];
+  const skippedIntegrationNames = new Set(); // 顶层归一后的跳过用例名（判据 ③ 的分诊用）
   const failedTests = []; // { pkg, test }
+  const failedTestNames = new Set(); // 顶层归一后的失败用例名（判据 ③ 的分诊用）
   const failedPackages = []; // 包级 fail 且**没有** FailedBuild：非构建失败
   const buildFailures = new Set(); // 归一后的 import path；同一次编译失败只留 1 条
   const buildOutput = [];
@@ -172,6 +210,7 @@ function main(argv) {
         // `TestOpenMySQLSkipsWhenDSNIsMissing` 则是故意 skip 的单元测（见 isIntegrationTestName）。
         if (isTestEvent && isIntegrationTestName(test)) {
           skipped.push(`${pkg || "?"} :: ${test}`);
+          skippedIntegrationNames.add(topLevelTestName(test));
         }
         break;
       case "fail":
@@ -183,6 +222,7 @@ function main(argv) {
           buildFailures.add(normalizeImportPath(event.FailedBuild));
         } else if (isTestEvent) {
           failedTests.push({ pkg: pkg || "?", test });
+          failedTestNames.add(topLevelTestName(test));
         } else {
           failedPackages.push(pkg || "?");
         }
@@ -236,9 +276,16 @@ function main(argv) {
   // 于是 fake 的 TestAcquireIntegrationLockSucceeds（无指纹）自然出局；
   // 删掉 / 改名 / skip 掉任意一条真用例，集合就少一个元素。
   const countedNames = [...passedIntegration].filter((name) => fingerprintsByTest.has(name)).sort();
-  const skippedOrFailedWithFingerprint = [...fingerprintsByTest.keys()]
+  // 指纹在手、但没进「顶层 Integration PASS」集合的用例——判据 ③ 要靠它**区分两种红**。
+  const fingerprintWithoutIntegrationPass = [...fingerprintsByTest.keys()]
     .filter((name) => !passedIntegration.has(name))
     .sort();
+  const fingerprintWithoutIntegrationPassFailed = fingerprintWithoutIntegrationPass.filter(
+    (name) => failedTestNames.has(name) || skippedIntegrationNames.has(name),
+  );
+  const fingerprintWithoutIntegrationPassNotFailed = fingerprintWithoutIntegrationPass.filter(
+    (name) => !failedTestNames.has(name),
+  );
 
   const passed = [...passedIntegration].sort();
 
@@ -297,14 +344,18 @@ function main(argv) {
     );
   }
 
-  // ---- 判据 ①（A2）：必须有一条真实库指纹 -----------------------------------------
-  // 这不是「顺带多看一眼」——它是**唯一**能把「真 MySQL」和「fake driver」分开的证据：
-  // 后者的 PASS/SKIP/FAIL 事件与前者完全同形。
+  // ---- 判据 ①（A2）：日志里必须有一条「真实库指纹」这一行 --------------------------------
+  // 它不是「顺带多看一眼」：它是本门唯一**试图**把「真 MySQL」与「fake driver」分开的地方。
   //
-  // 已知边界（G8，写在注释里以免被当成证明）：指纹是**防误配 / 防疏忽**的标记，
-  // **不是**防蓄意伪造的证明。qa 已实测：把 fake driver 的兜底返回值改成 `8.0.36`
-  // 之类的合法版本号，就能让假连接打出指纹。它挡住的是「DSN 配错 / 用例被无意换成 fake」，
-  // 挡不住「有人特意去改 fake 让它长得像真库」——后者只有 code review 能挡。
+  // ⚠️ **G8：它挡不住伪造，而且攻击成本很低。** 上一版这里写的是「改 fake driver 的兜底返回值
+  // 才能造出指纹」——**写大了**。qa 实测（F1/F2/F3）：在任意测试体内写**一行**
+  // `t.Log("REAL_DB_FINGERPRINT …")`、或**一行** `fmt.Println(…)`（后者不经 testing，同样被归因），
+  // 就足以产出一条合格指纹。不需要改 fake driver，不需要连库。
+  //   也**不要**试图用「前缀必须是 mysql.go:」或「只允许 t.Log」来补救——qa 已实测两条都能绕过：
+  //   去掉 t.Helper() 能改前缀，而 fmt.Println 可以手写任意前缀。
+  // ⇒ 本判据的真实作用只有两个：① 抓「DSN 配错 / 用例被无意换成 fake」这类**疏忽**；
+  //   ② 让「完全没跑」有一个明确的红。它是跳线，不是证据。
+  //   真证据请看 server-witness 门（服务端 general_log 的连接计数）。
   if (fingerprintsByTest.size === 0) {
     problems.push(
       `缺少真实库指纹（${FINGERPRINT_PREFIX.trim()}）。` +
@@ -330,16 +381,60 @@ function main(argv) {
   }
 
   // ---- 判据 ③（A1）：**带自有指纹**的顶层集成 PASS 不得少于下界 ----------------------
+  //
+  // G1-R3：低于下界有两个**完全不同**的原因，修法不同，必须在输出里分开：
+  //   (a) 有指纹的用例**没通过**（失败 / 跳过）——「用例偶发失败」。它同时会在判据 ⓪ / ② 里报，
+  //       这里只补一句指向，避免读者把它当成「有人删了用例」。
+  //       进入 (a) 而不是 (b) 的条件是：它在日志里有一条**落在集合规则之外的红**——
+  //       一条顶层（不含 /）且名字含 Integration 的 skip 事件，或一条 fail 事件。
+  //       ⚠️ 「改名 + t.Skip」不满足 (a)：改名后名字不含 Integration，② 抓不到它，
+  //       它也没有 fail 事件 —— 那属于 (b)「被改名 / 删除」，不是「偶发失败」。
+  //   (b) 有指纹但**既没 PASS 也没 FAIL 事件**——日志里根本没有这条测试的结局。
+  //       正常跳过会出现在 ②；正常失败会出现在 ⓪。两者都没有 ⇒ 它被**改名 / 删除**了
+  //       （改名后新名字不满足「名字含 Integration」，所以不在 passedIntegration 里；
+  //        删除后连事件都没有）。**前提是它先连了库**——先连接、再在改名后的用例里 skip，
+  //       才会留下指纹；实测正是这一形态。
+  //   (c) 一个孤儿指纹都没有：打指纹的用例**根本没跑起来**——被 `-skip` 跳过、
+  //       被整条删除、或被改名到不含 Integration 后再跳过（此时连 SKIP 事件都看不到）。
+  //   (d) 与 (c) 同形，但日志里**有**含 Integration 的 SKIP 事件：改报「有集成用例被跳过」，
+  //       避开「8 条全 SKIP（DSN 没配）却写成『有人删了用例』」的误报。
   if (countedNames.length < MIN_FINGERPRINTED_INTEGRATION_PASSES) {
-    const hint =
-      skippedOrFailedWithFingerprint.length > 0
-        ? "\n  有指纹、但没进「顶层 Integration PASS」集合的用例（被改名 / skip / 失败）：\n" +
-          skippedOrFailedWithFingerprint.map((entry) => `    - ${entry}`).join("\n")
-        : "";
+    const details = [];
+    if (fingerprintWithoutIntegrationPassFailed.length > 0) {
+      details.push(
+        "原因 (a)：以下用例**确实跑过**（打出了指纹），但**没有通过**（失败 / 跳过）——" +
+          "这是用例失败，不是有人删了用例：\n" +
+          fingerprintWithoutIntegrationPassFailed.map((entry) => `    - ${entry}`).join("\n") +
+          "\n  先看判据 ⓪ 与 ② 里它们各自的失败原因；修好后计数自然回到下界。",
+      );
+    }
+    if (fingerprintWithoutIntegrationPassNotFailed.length > 0) {
+      details.push(
+        "原因 (b)：以下用例打出了指纹，但日志里**既没有 PASS 也没有 FAIL**——" +
+          "说明它没有以「名字含 Integration」的身份跑完：**被改名或删除**是首要解释：\n" +
+          fingerprintWithoutIntegrationPassNotFailed.map((entry) => `    - ${entry}`).join("\n") +
+          "\n  （改名后的新名字不含 Integration，因此不计入集合；删除后连事件都没有。）",
+      );
+    }
+    if (details.length === 0 && skippedIntegrationNames.size > 0) {
+      details.push(
+        `原因 (d)：日志里有 ${skippedIntegrationNames.size} 条**名字含 Integration 的用例被跳过**（见判据 ② 的清单），\n` +
+          "  且一个孤儿指纹都没有 ⇒ 它们**根本没跑**。首要解释是 DSN 没配；其次是有人用 -skip 点名跳过。\n" +
+          "  这两种都**不是**「用例偶发失败」，也不是「用例被删」——按判据 ② 的清单逐条处理。",
+      );
+    }
+    if (details.length === 0) {
+      details.push(
+        "原因 (c)：日志里**一条孤儿指纹都没有**，也**没有任何集成用例的 SKIP 事件**——打指纹的用例根本没跑起来。\n" +
+          "  常见解释：被整条删除、被 `-skip` 跳过但改名后已不含 Integration（此时 log 里看不到 SKIP 事件），\n" +
+          "  或这次不是完整的 `go test ./...`。\n" +
+          "  ⚠️ 「被人故意删掉一条」也会长成这个样子——本门分不出「误删」与「故意跳过」，\n" +
+          "  但服务端见证门会：删了用例，服务端的真实连接数就会掉到 8 以下。",
+      );
+    }
     problems.push(
-      `带自有指纹的顶层集成用例通过 ${countedNames.length} 个，低于下界 ${MIN_FINGERPRINTED_INTEGRATION_PASSES} 个。` +
-        "删除、改名或 skip 集成用例会让这道门变松——这正是它要防的事。" +
-        hint,
+      `带自有指纹的顶层集成用例通过 ${countedNames.length} 个，低于下界 ${MIN_FINGERPRINTED_INTEGRATION_PASSES} 个。\n` +
+        details.join("\n"),
     );
   }
 
@@ -365,6 +460,11 @@ function main(argv) {
   console.log(
     `门通过：带自有指纹的顶层集成用例 ${countedNames.length} 个 >= 下界 ${MIN_FINGERPRINTED_INTEGRATION_PASSES} 个，` +
       "无 SKIP、无失败。",
+  );
+  // 这句话必须跟着绿色一起出现：绿色单独出现时，读的人很容易把它当成「连过库」的证据。
+  console.log(
+    "⚠️ 本门是跳线，不是证据：它只核对**测试进程自己在日志里说的话**，一行 t.Log 即可伪造。" +
+      "「集成测真的连过库」以 server-witness 门（服务端 general_log）为准。",
   );
   return 0;
 }

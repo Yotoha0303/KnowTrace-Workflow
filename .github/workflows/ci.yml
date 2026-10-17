@@ -110,12 +110,21 @@ jobs:
     # 集成测试全部 t.Skipf（internal/testutil/mysql.go 的 OpenMySQL 在 DSN 为空时 skip）
     # ——「CI 全绿」里没有任何一条来自真实数据库，ADR-0019 §5.6 的每条负向判据都没有载体。现在补上了。
     #
-    # 这道门**不是**「日志里有 PASS」就算过。它要求同时成立（详见下方断言步）：
-    #   ① 有真实库指纹 `REAL_DB_FINGERPRINT`（把 fake driver 挡在外面）；
-    #   ② 没有任何**集成用例**被 skip（含子测试）；
-    #   ③ **带自有指纹**的顶层集成用例 PASS >= 8 条（真实连库的下界，删/改名/skip 一条即红）。
-    #      计数口径是「指纹事件被 go test 归因到哪条 Test」，不是「名字里有没有 Integration」——
-    #      后者会把走 fake driver 的 TestAcquireIntegrationLockSucceeds 也算进来（qa 实测的假槽位）。
+    # 本 job 有**两道**门，职责不同，别混着引用：
+    #
+    # 第一道（日志门，scripts/check-go-integration-gate.mjs）——**跳线，不是证据**：
+    #   要求同时成立：① 日志里有 `REAL_DB_FINGERPRINT` 行；② 没有集成用例被 skip；
+    #   ③ 带自有指纹的顶层集成用例 PASS >= 8；④ go test 自身的失败分类单列。
+    #   ⚠️ **它防误配 / 疏忽，不防蓄意伪造。攻击成本 = 一行日志**：
+    #   qa 已实测，在任何测试体里写一行 `t.Log("REAL_DB_FINGERPRINT …")` 或 `fmt.Println(…)`
+    #   都会被 go test 归因到那条测试，假用例即可补上被删 / 被 skip 让出的槽位，甚至零连库全绿。
+    #   **不得**把它的绿色引用为「集成测真的连过库」的证据。
+    #
+    # 第二道（服务端见证，scripts/check-go-integration-server-witness.mjs）——**这一道才是证据**：
+    #   测试前后各一步，用 root 读 MySQL 自己的 `general_log`，数「以测试账户连上测试库、
+    #   并在该连接上执行过 OpenMySQL 启动序列（GET_LOCK / DATABASE() / VERSION()）的连接数」。
+    #   测试二进制够不着这个账本（本机实测：测试账户读 performance_schema 被拒，ERROR 1142）。
+    #   ⚠️ 它证明的是「有过 8 条真实连接」，**不是**「是哪 8 条 Go 用例连的」——服务端没有测试名。
     #
     # ⚠️ 这道门**当前只覆盖 MySQL 方言**：testutil 硬绑 gorm.io/driver/mysql（PG 版属 M4）。
     #    它**不覆盖** PG 迁移的方言残留（SET FOREIGN_KEY_CHECKS / SELECT DATABASE() / GET_LOCK）。
@@ -150,6 +159,21 @@ jobs:
           go-version-file: services/go-user-system/go.mod
           cache-dependency-path: services/go-user-system/go.sum
 
+      # 服务端见证（第一半）：**在测试之前**清空并打开 MySQL 自己的 general_log。
+      #
+      # 为什么需要这一步：下面那道日志门只能核对「测试进程自己说的话」，一行 t.Log 即可伪造。
+      # 真证据必须取自测试进程够不着的地方 —— MySQL 的 general_log 表。
+      # ⚠️ 顺序不可换：先关日志 → TRUNCATE → 再打开；否则清理语句自己会被记进去。
+      # ⚠️ `log_output` 必须含 TABLE（MySQL 默认是 FILE）；脚本会**回读**实际值，不信 SET 成功。
+      # 口令走 MYSQL_PWD 而不是 `-p`：与本 job 下面 e2e 的查库步同形，不出现在命令行里。
+      - name: Prepare the MySQL server-side witness log
+        working-directory: ${{ github.workspace }}
+        env:
+          MYSQL_PWD: knowtrace-root
+        run: >-
+          node scripts/check-go-integration-server-witness.mjs --prepare
+          --database go_user_system_test --user go_user_system
+
       # 与 Makefile 的 check 目标、CONTRIBUTING 的「提交前验证」保持一致。
       # 这个 job 之前缺失，导致认证服务的 26 个测试文件不在任何自动化门里。
       #
@@ -177,31 +201,59 @@ jobs:
       # 为什么必须有这一步：`go test` 在用例 skip 时**退出码仍是 0**，
       # 于是「DSN 配错 → 全部 SKIP → CI 全绿」与「集成测真跑」在观测上完全同形。
       #
+      # ⚠️ 本步是**跳线（tripwire），不是证据（proof）**——与上面两步的分工必须分清：
+      #   它只核对「测试进程自己在日志里说了什么」。qa 已实测（2026-10-17，三个形态）：
+      #   在任意测试体内写**一行** `t.Log("REAL_DB_FINGERPRINT …")` 或 `fmt.Println(…)`，
+      #   go test 都会把这条输出归因到那条测试 ⇒ 假用例补上被删 / 被 skip 让出的槽位，
+      #   甚至**零连库**也能全绿。**攻击成本 = 一行日志。**
+      #   ⇒ **不得**把本步的绿色引用为「集成测真的连过库」的证据；那件事由下一步（服务端见证）负责。
+      #   本步防的是**误配 / 疏忽**：DSN 没配、用例被无意跳过、fake driver 被误接上。
+      #
       # 判据（四条，缺一不可；实现见 scripts/check-go-integration-gate.mjs）：
       #   ① 日志里必须有 `REAL_DB_FINGERPRINT database=… version=…` —— 它由 testutil.OpenMySQL
       #      向数据库要 DATABASE()/VERSION() 拼出（internal/testutil/mysql.go）。
-      #      fake driver 不经过那里，也就造不出这一行。**这一条把「真 MySQL」与「假 DB」分开。**
-      #      ⚠️ 它是**防误配 / 防疏忽**的标记，不是防蓄意伪造的证明（改 fake 的兜底返回值就能造出来）。
       #   ② 任何被 SKIP 的集成用例（名字含 Integration，含子测试——JSON 里没有缩进可言）都失败。
       #   ③ **带自有指纹**的顶层集成用例 PASS **>= 8**。口径是指纹事件被 go test 归因（事件的 Test
       #      字段）到哪条测试，**不是**「名字里有没有 Integration」：后者会把走 fake driver、
       #      从未连库的 TestAcquireIntegrationLockSucceeds 也算进来，正好补掉「删/改名一条真用例」
       #      让出的那个槽位（qa 真跑证明：旧口径下 `-skip` 一条、或改名+skip 一条，门仍绿）。
-      #      **已知取舍**：将来加用例不会红；删到 8 以下会红。
+      #      低于下界时**区分两种红**：`原因 (a)` = 有指纹但用例失败 / 跳过（偶发失败，
+      #      看判据 ⓪ 与 ②）；`原因 (b)` = 有指纹但日志里连 FAIL 事件都没有（被改名 / 删除）。
+      #      这两类在退出码上同形，修法完全不同。
       #   ④ go test 自身的失败单独报，不与 ③ 混为一谈：**构建失败**（FailedBuild 字段 / build-fail
       #      事件，按 import path 去重，同一次编译失败只报 1 条）、**用例失败**（包级 fail 但
       #      **没有** FailedBuild，例如 t.Fatalf——旧版把它误报成编译错误）、`(cached)` 各列一条。
       #
       # `if: always()` 不可省：否则 `Run Go tests` 失败时这一步被跳过，日志里就只剩
-      # 「测试红了」而没有「集成测到底跑了几条、有没有连上真库」——正是诊断要的信息。
+      # 「测试红了」而没有「集成测到底跑了几条」——正是诊断要的信息。
       #
       # `working-directory` 必须显式覆盖：本 job 的 defaults 是 services/go-user-system，
       # 而脚本在仓库根的 scripts/ 下。不覆盖会找不到脚本（node 报错退出，门会红，
       # 但红的原因与「集成测没跑」无关——那是门自己坏了）。
-      - name: Assert the MySQL integration tests actually ran
+      - name: Assert the MySQL integration tests actually ran (log tripwire)
         if: always()
         working-directory: ${{ github.workspace }}
         run: node scripts/check-go-integration-gate.mjs /tmp/go-test.jsonl
+
+      # 服务端见证（第二半，**这一道才是证据**）：用 root 读 MySQL 的 general_log，
+      # 数「以 go_user_system 连上 go_user_system_test、并在该连接上执行过 OpenMySQL 启动序列
+      # （GET_LOCK / DATABASE() / VERSION()）的连接数」，要求 >= 8。
+      #
+      # 为什么测试二进制伪造不了：测试用的是 app 账户，本机实测它读
+      # performance_schema.events_statements_summary_by_digest 被拒（ERROR 1142），
+      # 对 mysql.general_log 同样读写不得。唯一能写的 root 连接不满足
+      # `user_host` 以被测账户开头的过滤条件。
+      # ⚠️ 它证明「有过 8 条真实连接」，**不证明**「是哪 8 条 Go 用例连的」——服务端没有测试名。
+      # ⚠️ `if: always()` 同理：`go test` 红了也要看服务端到底记了几条，那是第一手诊断信息。
+      #    此时本步会因连接数不足而红——**那是上游失败的下游结果**，脚本输出里已写明。
+      - name: Assert the MySQL server saw the integration connections
+        if: always()
+        working-directory: ${{ github.workspace }}
+        env:
+          MYSQL_PWD: knowtrace-root
+        run: >-
+          node scripts/check-go-integration-server-witness.mjs
+          --database go_user_system_test --user go_user_system --min-connections 8
 
       # 兜底：上面两步的输出只活在 job 里；失败时把原始 JSON 日志留成工件，
       # 否则「门红了但看不出为什么」只能靠重跑。
