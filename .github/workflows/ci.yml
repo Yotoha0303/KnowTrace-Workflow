@@ -107,8 +107,13 @@ jobs:
         working-directory: services/go-user-system
 
     # 2026-10-17（ISSUE-S3-015 / ADR-0019 §5.2 ①）：本 job 原先**不配 TEST_DATABASE_DSN**，
-    # 集成测试全部 t.Skipf（internal/testutil/mysql.go:89-92）——「CI 全绿」里没有任何一条
-    # 来自真实数据库，ADR-0019 §5.6 的每条负向判据都没有载体。现在补上了。
+    # 集成测试全部 t.Skipf（internal/testutil/mysql.go 的 OpenMySQL 在 DSN 为空时 skip）
+    # ——「CI 全绿」里没有任何一条来自真实数据库，ADR-0019 §5.6 的每条负向判据都没有载体。现在补上了。
+    #
+    # 这道门**不是**「日志里有 PASS」就算过。它要求同时成立（详见下方断言步）：
+    #   ① 有真实库指纹 `REAL_DB_FINGERPRINT`（把 fake driver 挡在外面）；
+    #   ② 没有任何**集成用例**被 skip（含子测试）；
+    #   ③ 顶层集成用例 PASS >= 8 条（真实连库的下界，删用例会红）。
     #
     # ⚠️ 这道门**当前只覆盖 MySQL 方言**：testutil 硬绑 gorm.io/driver/mysql（PG 版属 M4）。
     #    它**不覆盖** PG 迁移的方言残留（SET FOREIGN_KEY_CHECKS / SELECT DATABASE() / GET_LOCK）。
@@ -116,7 +121,7 @@ jobs:
     # ⚠️ 镜像照抄下面 e2e job 的 mysql:8.0（同一份配置，不另起一套）；
     #    MySQL 版本 pin（8.0 vs 8.4）的收口与 #26（ISSUE-S3-016）同批处理。
     # ⚠️ 库名必须是 go_user_system_test：testutil 的 assertTestDatabase 拒绝库名不含
-    #    "test" 的库（internal/testutil/mysql.go:204），照抄 e2e 的 go_user_system 会直接 t.Fatalf。
+    #    "test" 的库（internal/testutil/mysql.go），照抄 e2e 的 go_user_system 会直接 t.Fatalf。
     services:
       mysql:
         image: mysql:8.0
@@ -148,7 +153,15 @@ jobs:
       #
       # DSN 形态与 pkg/database/db.go:47-53 的构造方式一致（gorm.io/driver/mysql 的
       # mysql.Open 直接吃这个串）；库名含 "test" 是硬要求——见上面 service 块。
-      # `-v` 让 PASS/SKIP 落到日志里，下面那步要 grep 它。
+      #
+      # `-count=1` 不可省：`go test` 会缓存**成功**的包，重跑时直接回放上次结果
+      # （连测试函数体都不执行）。同一个 SHA 上重跑 CI 时，断言步会读到上一次的 PASS。
+      # 它同时让 `(cached)` 在本次日志里不可能出现——断言步仍保留对它的检查，作为
+      # 将来有人去掉这个参数时的纵深防御。
+      #
+      # `-json` 而不是 `-v`：断言步按事件（Action）计数，不按 `--- PASS:` 文本计数。
+      # 文本判据抓不到缩进 4 空格的子测试 SKIP，也分不清真 MySQL 与 fake driver。
+      #
       # `set -o pipefail` 不可省：GitHub Actions 的 bash 默认带 `-e` 但**不带 pipefail**，
       # `go test … | tee` 会把测试失败的退出码吞成 tee 的 0。
       - name: Run Go tests
@@ -156,33 +169,42 @@ jobs:
           TEST_DATABASE_DSN: "go_user_system:knowtrace@tcp(127.0.0.1:3306)/go_user_system_test?charset=utf8mb4&parseTime=True&loc=Local"
         run: |
           set -o pipefail
-          go test ./... -v 2>&1 | tee /tmp/go-test.log
+          go test ./... -count=1 -json 2>&1 | tee /tmp/go-test.jsonl
 
-      # 证伪：证明集成测试**真的执行了**，而不是配了 DSN 却被 skip 掉。
+      # 证伪：证明集成测试**真的执行了**，而不是配了 DSN 却被 skip 掉、或被换成了 fake DB。
       # 为什么必须有这一步：`go test` 在用例 skip 时**退出码仍是 0**，
       # 于是「DSN 配错 → 全部 SKIP → CI 全绿」与「集成测真跑」在观测上完全同形。
-      # 正负两半：无 SKIP 的 Integration 用例 + 至少一个 PASS 的 Integration 用例。
-      # 日志文件缺失也失败（fail-closed）——那意味着上一步根本没跑成。
+      #
+      # 判据（四条，缺一不可；实现见 scripts/check-go-integration-gate.mjs）：
+      #   ① 日志里必须有 `REAL_DB_FINGERPRINT database=… version=…` —— 它由 testutil.OpenMySQL
+      #      向数据库要 DATABASE()/VERSION() 拼出（internal/testutil/mysql.go）。
+      #      fake driver 不经过那里，也就造不出这一行。**这一条把「真 MySQL」与「假 DB」分开。**
+      #   ② 任何被 SKIP 的集成用例（名字含 Integration，含子测试——JSON 里没有缩进可言）都失败。
+      #   ③ 顶层、名字含 Integration 的 PASS 用例 **>= 8**。8 是真实连库的下界：
+      #      9 条集成用例里 `TestAcquireIntegrationLockSucceeds` 走 fake driver、从未连库，不计入。
+      #      **已知取舍**：将来加用例不会红；删到 8 以下会红。
+      #   ④ go test 自身的失败（包级编译错误 / 用例失败 / 出现 `(cached)`）单独报，不与 ③ 混为一谈。
+      #
+      # `if: always()` 不可省：否则 `Run Go tests` 失败时这一步被跳过，日志里就只剩
+      # 「测试红了」而没有「集成测到底跑了几条、有没有连上真库」——正是诊断要的信息。
+      #
+      # `working-directory` 必须显式覆盖：本 job 的 defaults 是 services/go-user-system，
+      # 而脚本在仓库根的 scripts/ 下。不覆盖会找不到脚本（node 报错退出，门会红，
+      # 但红的原因与「集成测没跑」无关——那是门自己坏了）。
       - name: Assert the MySQL integration tests actually ran
-        run: |
-          set -euo pipefail
-          log=/tmp/go-test.log
-          if [[ ! -f "$log" ]]; then
-            echo "找不到 $log —— 上一步没留下日志，无法判定集成测试是否执行"
-            exit 1
-          fi
-          skipped="$(grep -cE '^--- SKIP: Test[A-Za-z0-9_]*Integration' "$log" || true)"
-          passed="$(grep -cE '^--- PASS: Test[A-Za-z0-9_]*Integration' "$log" || true)"
-          echo "集成测试实际通过 ${passed} 个，被跳过 ${skipped} 个"
-          if [[ "$skipped" != "0" ]]; then
-            echo "存在被 SKIP 的集成测试："
-            grep -E '^--- SKIP: Test[A-Za-z0-9_]*Integration' "$log"
-            exit 1
-          fi
-          if [[ "$passed" -lt 1 ]]; then
-            echo "没有任何集成测试被执行 —— 这道门当前是空的"
-            exit 1
-          fi
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: node scripts/check-go-integration-gate.mjs /tmp/go-test.jsonl
+
+      # 兜底：上面两步的输出只活在 job 里；失败时把原始 JSON 日志留成工件，
+      # 否则「门红了但看不出为什么」只能靠重跑。
+      - name: Upload Go test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-jsonl
+          path: /tmp/go-test.jsonl
+          retention-days: 14
 
   # 认证服务的 React 前端（`services/go-user-system/frontend`）。
   # 与上面 go job 同形：**这个 job 之前也不存在**，导致它的 7 个 vitest 文件

@@ -162,11 +162,11 @@ type skipRecorder struct {
 	reason string
 }
 
-func (r *skipRecorder) Skip(args ...interface{}) {
+func (r *skipRecorder) Skip(args ...any) {
 	r.reason = fmt.Sprint(args...)
 }
 
-func (r *skipRecorder) Skipf(format string, args ...interface{}) {
+func (r *skipRecorder) Skipf(format string, args ...any) {
 	r.reason = fmt.Sprintf(format, args...)
 }
 
@@ -293,4 +293,52 @@ func TestAcquireIntegrationLockSucceeds(t *testing.T) {
 	})
 
 	acquireIntegrationLock(t, db)
+}
+
+// TestBuildRealDBFingerprintRejectsFakeConnection 是 CI 集成测门的反向守卫（A2）：
+// fake driver 明明能 PASS，但**不得**产出 REAL_DB_FINGERPRINT 标记。
+// 若有人把准入判据放宽（例如只看「DATABASE() 非空」），这条会红——
+// 而断言步会因此把「8 条真用例全换成 fake」的门判绿。
+func TestBuildRealDBFingerprintRejectsFakeConnection(t *testing.T) {
+	db := openTestutilGormDB(t)
+	t.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	marker, err := buildRealDBFingerprint(db)
+	if err != nil {
+		t.Fatalf("fake driver should answer DATABASE()/VERSION() without error, got %v", err)
+	}
+	if marker != "" {
+		t.Fatalf("fake connection must not produce %q, got %q", RealDBFingerprintPrefix, marker)
+	}
+}
+
+func TestIsRealDBFingerprint(t *testing.T) {
+	cases := []struct {
+		name          string
+		databaseName  string
+		serverVersion string
+		want          bool
+	}{
+		{name: "mysql 8.0", databaseName: "go_user_system_test", serverVersion: "8.0.36", want: true},
+		{name: "mysql with suffix", databaseName: "go_user_system_test", serverVersion: "8.4.0-log", want: true},
+		{name: "empty database", databaseName: "", serverVersion: "8.0.36", want: false},
+		{name: "blank database", databaseName: "   ", serverVersion: "8.0.36", want: false},
+		{name: "fake driver answers zero", databaseName: "go_user_test", serverVersion: "0", want: false},
+		{name: "empty version", databaseName: "go_user_system_test", serverVersion: "", want: false},
+		{name: "not a version", databaseName: "go_user_system_test", serverVersion: "MariaDB", want: false},
+		{name: "two components only", databaseName: "go_user_system_test", serverVersion: "8.0", want: false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := isRealDBFingerprint(testCase.databaseName, testCase.serverVersion); got != testCase.want {
+				t.Fatalf("isRealDBFingerprint(%q, %q) = %v, want %v", testCase.databaseName, testCase.serverVersion, got, testCase.want)
+			}
+		})
+	}
 }
