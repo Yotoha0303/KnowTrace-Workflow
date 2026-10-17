@@ -113,7 +113,9 @@ jobs:
     # 这道门**不是**「日志里有 PASS」就算过。它要求同时成立（详见下方断言步）：
     #   ① 有真实库指纹 `REAL_DB_FINGERPRINT`（把 fake driver 挡在外面）；
     #   ② 没有任何**集成用例**被 skip（含子测试）；
-    #   ③ 顶层集成用例 PASS >= 8 条（真实连库的下界，删用例会红）。
+    #   ③ **带自有指纹**的顶层集成用例 PASS >= 8 条（真实连库的下界，删/改名/skip 一条即红）。
+    #      计数口径是「指纹事件被 go test 归因到哪条 Test」，不是「名字里有没有 Integration」——
+    #      后者会把走 fake driver 的 TestAcquireIntegrationLockSucceeds 也算进来（qa 实测的假槽位）。
     #
     # ⚠️ 这道门**当前只覆盖 MySQL 方言**：testutil 硬绑 gorm.io/driver/mysql（PG 版属 M4）。
     #    它**不覆盖** PG 迁移的方言残留（SET FOREIGN_KEY_CHECKS / SELECT DATABASE() / GET_LOCK）。
@@ -179,11 +181,16 @@ jobs:
       #   ① 日志里必须有 `REAL_DB_FINGERPRINT database=… version=…` —— 它由 testutil.OpenMySQL
       #      向数据库要 DATABASE()/VERSION() 拼出（internal/testutil/mysql.go）。
       #      fake driver 不经过那里，也就造不出这一行。**这一条把「真 MySQL」与「假 DB」分开。**
+      #      ⚠️ 它是**防误配 / 防疏忽**的标记，不是防蓄意伪造的证明（改 fake 的兜底返回值就能造出来）。
       #   ② 任何被 SKIP 的集成用例（名字含 Integration，含子测试——JSON 里没有缩进可言）都失败。
-      #   ③ 顶层、名字含 Integration 的 PASS 用例 **>= 8**。8 是真实连库的下界：
-      #      9 条集成用例里 `TestAcquireIntegrationLockSucceeds` 走 fake driver、从未连库，不计入。
+      #   ③ **带自有指纹**的顶层集成用例 PASS **>= 8**。口径是指纹事件被 go test 归因（事件的 Test
+      #      字段）到哪条测试，**不是**「名字里有没有 Integration」：后者会把走 fake driver、
+      #      从未连库的 TestAcquireIntegrationLockSucceeds 也算进来，正好补掉「删/改名一条真用例」
+      #      让出的那个槽位（qa 真跑证明：旧口径下 `-skip` 一条、或改名+skip 一条，门仍绿）。
       #      **已知取舍**：将来加用例不会红；删到 8 以下会红。
-      #   ④ go test 自身的失败（包级编译错误 / 用例失败 / 出现 `(cached)`）单独报，不与 ③ 混为一谈。
+      #   ④ go test 自身的失败单独报，不与 ③ 混为一谈：**构建失败**（FailedBuild 字段 / build-fail
+      #      事件，按 import path 去重，同一次编译失败只报 1 条）、**用例失败**（包级 fail 但
+      #      **没有** FailedBuild，例如 t.Fatalf——旧版把它误报成编译错误）、`(cached)` 各列一条。
       #
       # `if: always()` 不可省：否则 `Run Go tests` 失败时这一步被跳过，日志里就只剩
       # 「测试红了」而没有「集成测到底跑了几条、有没有连上真库」——正是诊断要的信息。
