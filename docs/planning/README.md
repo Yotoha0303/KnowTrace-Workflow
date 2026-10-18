@@ -35,4 +35,12 @@
 
 | 文档 | 对应变更 | 关联 ADR | 状态 |
 | --- | --- | --- | --- |
-| [`2026-10-16-认证库迁PostgreSQL-施工方案.md`](2026-10-16-认证库迁PostgreSQL-施工方案.md) | 认证服务存储 MySQL → PostgreSQL（**C 档**） | `ADR-0019`（`proposed`） | ⬜ 待开工（先决条件未满足） |
+| [`2026-10-16-认证库迁PostgreSQL-施工方案.md`](2026-10-16-认证库迁PostgreSQL-施工方案.md) | 认证服务存储 MySQL → PostgreSQL（**C 档**） | `ADR-0019`（`proposed`） | 🟡 进行中（M0-1 ✅ / M0-2 ⬜） |
+| [`架构调整-README.md`](架构调整-README.md) | **前端技术栈调整总索引**（Web / Mobile / 跨端契约） | `ADR-0020`~`ADR-0024`（**均未落**） | ⛔ 阻塞（ADR 未落） |
+| [`架构调整-00-共享契约.md`](架构调整-00-共享契约.md) | 跨端共享层 + **接口冻结** | 同上 | ⛔ 阻塞 |
+| [`架构调整-01-Web端.md`](架构调整-01-Web端.md) | Next.js → Vite SPA + Tauri 2 | `ADR-0020` · `ADR-0021` | ⛔ 阻塞 |
+| [`架构调整-02-Mobile端.md`](架构调整-02-Mobile端.md) | Expo + React Native（新建） | `ADR-0022` | ⛔ 阻塞 |
+| [`架构调整-03-认证前端迁移.md`](架构调整-03-认证前端迁移.md) | 删/迁 `services/go-user-system/frontend` | `ADR-0024`（subtree） | ⛔ 阻塞 |
+
+> **顺序（用户裁定）**：`MySQL→PG` → `认证前端迁移` → `前端技术栈调整`。
+> 前两步都改 `services/go-user-system/**`（subtree），叠加会放大冲突。
