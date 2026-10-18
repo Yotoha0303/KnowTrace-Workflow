@@ -9,6 +9,9 @@ allowBuilds:
 overrides:
   ansi-regex@5.0.0: 5.0.1
   exceljs>uuid: 11.1.1
+  # Dependabot 告警：source-map-js < 1.2.2（high，事件循环 DoS via indexed source map）。
+  # 主应用 tailwind 4 链上解析到 1.2.1；1.2.2 是同 major 的修复版，无 API 变化。
+  source-map-js: 1.2.2
 minimumReleaseAgeExclude:
   - '@next/env@16.3.1 || 16.4.1'
   - '@next/swc-darwin-arm64@16.3.1 || 16.4.1'
