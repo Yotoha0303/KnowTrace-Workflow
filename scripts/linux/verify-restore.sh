@@ -92,6 +92,52 @@ done
 log "验证组件 SHA-256"
 (cd "$bundle_dir" && sha256sum --check SHA256SUMS)
 
+# metadata.txt 的键值读取。**缺失与空值都返回空串**，由调用方决定是 die 还是放行——
+# 这里刻意不给默认值：默认值会把「没记录」静默变成「记录的是那个值」。
+metadata_value() {
+  local key="$1"
+  awk -F= -v k="$key" '$1 == k {sub(/^[^=]*=/, ""); print; found=1; exit} END {if (!found) exit 1}' \
+    "$bundle_dir/metadata.txt"
+}
+
+# ----------------------------------------------------------------------------
+# 备份的是「哪个库」（A1/A2）
+# ----------------------------------------------------------------------------
+# `cmp` 只证明「备份与恢复自洽」：把 auth-postgres.dump 换成主库 dump、重算校验，
+# 整条链全绿 —— 因为两份 dump 各自的恢复也都自洽。故必须把**库身份**写进 metadata
+# 并在这里断言。两路独立来源：
+#   ① 备份端 psql 在源库里读到的 current_database()（metadata 的 *postgres_db=）
+#   ② dump 自己的 TOC 头 `;     dbname: <库名>`（pg_restore --list 输出）
+# 实测 PG 17.11：`pg_restore --list` 的头部带 dbname，故 ② 可得；它能被单独伪造，
+# 所以**两路都要对**。
+[[ "$(metadata_value schema_version || true)" =~ ^[0-9]+$ ]] \
+  || die "metadata.txt 缺少可解析的 schema_version——无法证明归档格式，拒绝演练"
+main_db_meta="$(metadata_value postgres_db || true)"
+auth_db_meta="$(metadata_value auth_postgres_db || true)"
+[[ -n "$main_db_meta" ]] \
+  || die "metadata.txt 缺少 postgres_db（备份端未记录实际库名）——拒绝演练：无法区分两份 dump"
+[[ -n "$auth_db_meta" ]] \
+  || die "metadata.txt 缺少 auth_postgres_db（备份端未记录实际库名）——拒绝演练：无法区分两份 dump"
+[[ "$main_db_meta" != "$auth_db_meta" ]] \
+  || die "metadata 里主应用库与认证库同名（$main_db_meta）——两份 dump 不可区分"
+[[ "$main_db_meta" == "knowtrace_workflow" ]] \
+  || die "主应用库名与期望不符：metadata=$main_db_meta 期望=knowtrace_workflow"
+[[ "$auth_db_meta" == "$AUTH_POSTGRES_DB" ]] \
+  || die "认证库名与期望不符：metadata=$auth_db_meta 期望=$AUTH_POSTGRES_DB"
+
+main_dump_bytes_meta="$(metadata_value postgres_dump_bytes || true)"
+auth_dump_bytes_meta="$(metadata_value auth_postgres_dump_bytes || true)"
+main_dump_toc_meta="$(metadata_value postgres_dump_toc_entries || true)"
+auth_dump_toc_meta="$(metadata_value auth_postgres_dump_toc_entries || true)"
+for __value in "$main_dump_bytes_meta" "$auth_dump_bytes_meta" "$main_dump_toc_meta" "$auth_dump_toc_meta"; do
+  [[ "$__value" =~ ^[0-9]+$ ]] \
+    || die "metadata 缺少 dump 字节数 / TOC 条目数（备份端未记录）——拒绝演练：这两项是完整性回归的依据"
+done
+[[ "$(stat -c %s "$bundle_dir/postgres.dump")" == "$main_dump_bytes_meta" ]] \
+  || die "postgres.dump 字节数与 metadata 不符"
+[[ "$(stat -c %s "$bundle_dir/auth-postgres.dump")" == "$auth_dump_bytes_meta" ]] \
+  || die "auth-postgres.dump 字节数与 metadata 不符"
+
 if [[ ! -s "$bundle_dir/config/.env" ]]; then
   log "WARNING: 备份中没有 config/.env；灾难恢复时需要从独立密钥库补齐" >&2
 fi
@@ -176,6 +222,20 @@ containers+=("$pg_container")
 wait_for_command "$pg_container" 60 pg_isready --username=knowtrace --dbname=knowtrace \
   || die "临时 PostgreSQL 未就绪"
 docker cp "$bundle_dir/postgres.dump" "$pg_container:/tmp/postgres.dump"
+# ---- dump 与「库身份」对得上吗（A1/A2）----
+# ① TOC 头自述的 dbname 必须等于 metadata 里主应用库名。两份 dump 互换后，
+#    认证库那份的自述是 go_user_system，会在这一行被拦下。
+main_dump_dbname="$(docker exec "$pg_container" sh -ec \
+  "pg_restore --list /tmp/postgres.dump | awk '/^; *dbname:/ {print \$3; exit}'" | tr -d '\r')"
+[[ -n "$main_dump_dbname" ]] || die "postgres.dump 的 TOC 头读不到 dbname"
+[[ "$main_dump_dbname" == "$main_db_meta" ]] \
+  || die "postgres.dump 实际来自库 $main_dump_dbname，但 metadata 声明主应用库是 $main_db_meta —— 两份 dump 被互换/调包"
+# ② TOC 条目数必须与备份时一致。字节数由 SHA256SUMS 覆盖，条目数覆盖的是
+#    「文件没被换成一个同样大小、能跑通的其他 dump」这一类。
+main_toc_actual="$(docker exec "$pg_container" sh -ec \
+  "pg_restore --list /tmp/postgres.dump | awk '/TOC Entries:/ {print \$4; exit}'" | tr -d '\r')"
+[[ "$main_toc_actual" == "$main_dump_toc_meta" ]] \
+  || die "postgres.dump 的 TOC 条目数 $main_toc_actual 与 metadata 的 $main_dump_toc_meta 不符"
 docker exec "$pg_container" sh -ec \
   'pg_restore --username=knowtrace --dbname=knowtrace --no-owner --no-privileges --exit-on-error /tmp/postgres.dump'
 postgres_counts_container "$pg_container" | sed '/^[[:space:]]*$/d' | sort >"$scratch_dir/postgres-restored.tsv"
@@ -199,12 +259,29 @@ wait_for_command "$auth_pg_container" 60 pg_isready \
   --username="$AUTH_POSTGRES_USER" --dbname="$AUTH_POSTGRES_DB" \
   || die "临时认证 PostgreSQL 未就绪"
 docker cp "$bundle_dir/auth-postgres.dump" "$auth_pg_container:/tmp/auth-postgres.dump"
+# 同为 A1/A2：TOC 头自述的库名必须是认证库。主库 dump 被放进 auth-postgres.dump 时，
+# 自述是 knowtrace_workflow —— 与 metadata 的 auth_postgres_db 不符，在此拦下。
+auth_dump_dbname="$(docker exec "$auth_pg_container" sh -ec \
+  "pg_restore --list /tmp/auth-postgres.dump | awk '/^; *dbname:/ {print \$3; exit}'" | tr -d '\r')"
+[[ -n "$auth_dump_dbname" ]] || die "auth-postgres.dump 的 TOC 头读不到 dbname"
+[[ "$auth_dump_dbname" == "$auth_db_meta" ]] \
+  || die "auth-postgres.dump 实际来自库 $auth_dump_dbname，但 metadata 声明认证库是 $auth_db_meta —— 两份 dump 被互换/调包"
+auth_toc_actual="$(docker exec "$auth_pg_container" sh -ec \
+  "pg_restore --list /tmp/auth-postgres.dump | awk '/TOC Entries:/ {print \$4; exit}'" | tr -d '\r')"
+[[ "$auth_toc_actual" == "$auth_dump_toc_meta" ]] \
+  || die "auth-postgres.dump 的 TOC 条目数 $auth_toc_actual 与 metadata 的 $auth_dump_toc_meta 不符"
 # 先校验「可解析 + 数据块完整」，再恢复：--list 只读 TOC，抓不到尾部截断；
 # --data-only 配 --file=/dev/null 会把数据块完整读一遍（不写库、不连库）。
+# ⚠️ 边界（别写成「完整性闭环」）：--data-only **抓不到尾部追加**（实测 append-128B 仍 0）；
+#    尾部追加与 TOC 区损坏由**备份端**的全量 `pg_restore --file=/dev/null` 与
+#    TOC 条目数挡住；TOC 头部 `int`/`off` 镜像字段翻转仍会静默漏过（见 backup-all.sh 的注释）。
 docker exec "$auth_pg_container" sh -ec 'pg_restore --list /tmp/auth-postgres.dump >/dev/null' \
   || die "认证库 dump 不可解析（pg_restore --list 失败）"
 docker exec "$auth_pg_container" sh -ec 'pg_restore --data-only --file=/dev/null /tmp/auth-postgres.dump >/dev/null' \
   || die "认证库 dump 数据块不完整（全量读取失败）"
+# 与 --data-only 不同，这一道走完整流程（TOC + 数据块 + 文件尾），不连数据库。
+docker exec "$auth_pg_container" sh -ec 'pg_restore --file=/dev/null /tmp/auth-postgres.dump >/dev/null' \
+  || die "认证库 dump 完整性校验失败（全量读取）"
 docker exec "$auth_pg_container" sh -ec \
   'pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-owner --no-privileges --exit-on-error /tmp/auth-postgres.dump'
 auth_postgres_counts_container "$auth_pg_container" | sed '/^[[:space:]]*$/d' | sort >"$scratch_dir/auth-postgres-restored.tsv"

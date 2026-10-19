@@ -160,6 +160,57 @@ ORDER BY schemaname, relname
 SQL
 }
 
+# 实际库名（写进 metadata 供恢复端断言「备份的是哪个库」）。
+#
+# ⚠️ dump 的 TOC 头**其实**带 `;     dbname: <库名>`（实测 PG 17.11 的 pg_restore --list 输出），
+#    但它是「被 dump 的那个库」的**自述**——两份 dump 互换后，自述会跟着换，`cmp` 仍自洽。
+#    恢复端另外会拿 TOC 头与 metadata 交叉核对（见 verify-restore.sh），
+#    而这里记录的是 psql 在**源库内**读到的 current_database()，是独立的一路来源。
+current_database_name() {
+  local service="$1" username="$2" dbname="$3"
+  "${compose[@]}" exec -T "$service" psql \
+    --username="$username" \
+    --dbname="$dbname" \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --command='SELECT current_database();' \
+    | tr -d '[:space:]'
+}
+
+dump_toc_entries() {
+  local service="$1" dump_path="$2"
+  "${compose[@]}" exec -T "$service" pg_restore --list <"$dump_path" \
+    | awk '/TOC Entries:/ {print $4; exit}'
+}
+
+# ----------------------------------------------------------------------------
+# 完整性检查：custom 归档必须以 5 个 NUL 结尾
+# ----------------------------------------------------------------------------
+# **这一道是实测逼出来的**（PG 17.11，160 KB / 45 TOC 条目的 dump）：
+#   尾部**追加** 128 B 垃圾后：`--list` **0**、`--data-only --file=/dev/null` **0**、
+#   连全量 `pg_restore --file=/dev/null` 也 **0** —— 三条 pg_restore 路径全部看不见它。
+#   原因：最后一条 TOC 记录记的 `size` 与实际读取长度失配时，pg_restore 按**名字长度**
+#   调 archive_read，把追加的字节当成该记录载荷的一部分读走；本机 PG 17.11 上产物碰巧不变，
+#   权威验证方在 PG 18 上观察到「真实恢复 0、数据却只剩 2 张表」——即**版本相关、会静默损坏**。
+#   ⇒ 正确做法是在**归档层**判结构，不要指望 pg_restore 报错。
+#
+# custom 格式的末尾 5 字节是固定的：最后一条 TOC 的偏移（4 字节，pg_backup_archiver 写
+# `arct->tocs.toc_tail` 的偏移）+ 1 个 NUL 结尾。归档里**不可能**出现「最后一条记录
+# 就在文件末尾」的情况，故正常 dump 的这 4 字节恒为 `00 00 00 00`（5 个 NUL）。
+# 实测样本：1.6 KB / 14.9 KB / 160 KB / 376 KB 四种 dump，末尾 8 字节都是 `xx xx xx xx 00 00 00 00`
+# （最后 5 字节全 0）。尾部追加任何内容都会破坏它。
+custom_archive_tail_ok() {
+  local dump_path="$1"
+  [[ "$(tail -c 5 "$dump_path" | od -An -tx1 | tr -d ' \n')" == "0000000000" ]]
+}
+
+require_custom_archive_tail() {
+  local dump_path="$1" label="$2"
+  custom_archive_tail_ok "$dump_path" \
+    || die "$label dump 末尾不是 5 个 NUL（尾部被追加了内容）——备份未完成，不落归档"
+}
+
 postgres_counts() {
   emit_pg_table_counts_sql | "${compose[@]}" exec -T postgres psql \
     --username=knowtrace_workflow \
@@ -196,12 +247,24 @@ log "导出 PostgreSQL"
   --no-owner \
   --no-privileges >"$incomplete_dir/postgres.dump"
 "${compose[@]}" exec -T postgres pg_restore --list <"$incomplete_dir/postgres.dump" >/dev/null
+# 与认证库同一套完整性检查（见下方认证库段的长注释）：
+#   --list           只读 TOC，抓得到头部截断（并守住「可解析」）
+#   --file=/dev/null 全量走完恢复流程（TOC + 数据块），不连数据库；抓数据区/TOC 区损坏
+#   require_custom_archive_tail  末 5 字节必须是 NUL，抓**尾部追加**（pg_restore 看不见它）
+"${compose[@]}" exec -T postgres pg_restore --file=/dev/null <"$incomplete_dir/postgres.dump" >/dev/null \
+  || die "主应用 dump 完整性校验失败（全量读取）——备份未完成，不落归档"
+require_custom_archive_tail "$incomplete_dir/postgres.dump" "主应用"
 # ⚠️ 逐表计数**为空也不得落归档**：空清单与恢复端的空清单逐字节 cmp 是「相等」的，
 #    于是恢复演练会对一份没有行数依据的备份判 PASS（空分母判绿，AGENTS.md D3）。
 #    psql 失败本身由 pipefail 拦下；这里拦的是「psql 成功但输出 0 行」。
 postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/postgres-counts.tsv"
 [[ -s "$incomplete_dir/postgres-counts.tsv" ]] \
   || die "主应用逐表计数为空（postgres_counts 无输出）——备份未完成，不落归档"
+postgres_db_name="$(current_database_name postgres knowtrace_workflow knowtrace_workflow)"
+[[ -n "$postgres_db_name" ]] || die "读不到主应用实际库名——备份未完成，不落归档"
+postgres_dump_toc_entries="$(dump_toc_entries postgres "$incomplete_dir/postgres.dump")"
+[[ "$postgres_dump_toc_entries" =~ ^[0-9]+$ ]] \
+  || die "读不到主应用 dump 的 TOC 条目数（pg_restore --list 输出异常）"
 
 log "导出认证 PostgreSQL"
 # 与主应用 postgres.dump 同形（--format=custom）：恢复端用同一套 pg_restore 路径。
@@ -220,9 +283,33 @@ log "导出认证 PostgreSQL"
 # --data-only 配 --file=/dev/null —— 解压+校验、不写库、**不连数据库**。
 "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --data-only --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
   || die "认证库 dump 数据块不完整（全量读取失败）——备份未完成，不落归档"
+# ⚠️ --data-only 的边界（实测，别写成「完整性已闭环」）：
+#    它只解压**数据块**，TOC 与文件尾不归它管 —— **尾部追加** 128 B 垃圾时它仍 exit 0。
+# 再加一道**全量** --file=/dev/null：走完整的「建 schema + 灌数据」流程，不连数据库
+# （PGHOST=127.0.0.1 PGPORT=1 下实测 exit 0）。实测（PG 17.11，160 KB / 45 TOC 条目）：
+#      TOC / 数据区翻 1 字节（offset 20000 / 60000 / 100000 …）：全量 **1**
+#      截断 1% 或 128 B：全量 **1**
+# **仍有两处抓不到**（本项目不声称堵住，逐条给实测）：
+#   ① **尾部追加**：全量也 exit 0。由下面的 require_custom_archive_tail 单独挡住。
+#   ② **TOC 头部镜像字段翻转**（offset 200 / 600 实测「全绿 + 行数仍对」）：
+#      改的是 TOC 头的 `int`/`off` 镜像，解压仍按头部的 `data` 偏移走，产物无恙；
+#      schema 区的特征字节（offset 2000 / 3000 / 5000 / 6000 / 8000）翻转让 SQL 出现
+#      非法 UTF-8，真实恢复 exit 1，但**全量 --file=/dev/null 只写文件不执行 SQL**，
+#      所以它看不见。那一段由恢复端的真实恢复（--exit-on-error）覆盖。
+#   对外一律表述为「尾部截断、尾部追加、数据区/TOC 区损坏已覆盖；TOC 头部镜像字段未覆盖」。
+"${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
+  || die "认证库 dump 完整性校验失败（全量读取）——备份未完成，不落归档"
+require_custom_archive_tail "$incomplete_dir/auth-postgres.dump" "认证库"
 auth_postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/auth-postgres-counts.tsv"
 [[ -s "$incomplete_dir/auth-postgres-counts.tsv" ]] \
   || die "认证库逐表计数为空（auth_postgres_counts 无输出）——备份未完成，不落归档"
+auth_postgres_db_name="$(current_database_name "$AUTH_POSTGRES_SERVICE" "$AUTH_POSTGRES_USER" "$AUTH_POSTGRES_DB")"
+[[ -n "$auth_postgres_db_name" ]] || die "读不到认证库实际库名——备份未完成，不落归档"
+auth_postgres_dump_toc_entries="$(dump_toc_entries "$AUTH_POSTGRES_SERVICE" "$incomplete_dir/auth-postgres.dump")"
+[[ "$auth_postgres_dump_toc_entries" =~ ^[0-9]+$ ]] \
+  || die "读不到认证库 dump 的 TOC 条目数（pg_restore --list 输出异常）"
+[[ "$postgres_db_name" != "$auth_postgres_db_name" ]] \
+  || die "主应用库与认证库的**实际库名相同**（$postgres_db_name）——恢复端将无法区分两份 dump"
 
 log "生成 Redis RDB 快照"
 redis_key_count="$("${compose[@]}" exec -T auth-redis redis-cli --raw DBSIZE)"
@@ -311,6 +398,12 @@ consistency=$([[ "$QUIESCE_WRITES" == "1" ]] && printf 'application-writes-stopp
 postgres_image=postgres:18-alpine
 auth_postgres_image=$AUTH_POSTGRES_IMAGE
 redis_image=redis:7.4-alpine
+postgres_db=$postgres_db_name
+auth_postgres_db=$auth_postgres_db_name
+postgres_dump_bytes=$(stat -c %s "$incomplete_dir/postgres.dump")
+auth_postgres_dump_bytes=$(stat -c %s "$incomplete_dir/auth-postgres.dump")
+postgres_dump_toc_entries=$postgres_dump_toc_entries
+auth_postgres_dump_toc_entries=$auth_postgres_dump_toc_entries
 contains_secrets=yes
 EOF
 
