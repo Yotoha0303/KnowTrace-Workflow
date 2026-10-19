@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -106,7 +106,7 @@ jobs:
   # 却从未被任何自动化门解析过一次。一个语法错只会在**服务器上、备份窗口里**才暴露。
   #
   # 本 job 是**静态门**，不是证据：它只证明「脚本能被各自的解析器读懂」，
-  # **不证明**脚本行为正确。行为判据属于「第二层」，不在本提交。
+  # **不证明**脚本行为正确。行为判据在下面的 `backup-dump` job 与本文件其余 job。
   #
   # 覆盖（tests/ci/static-script-gate.ps1 实现）：
   #   *.sh  -> bash -n            （parses, 不执行）
@@ -134,6 +134,81 @@ jobs:
       - name: Parse every shell, Python and PowerShell script
         shell: pwsh
         run: ./tests/ci/static-script-gate.ps1
+
+  # ---------------------------------------------------------------------------
+  # PG 18 上的 dump 判据（M5 三跳链 03 环阻断项 G-6 的第二层 —— **证据**）
+  # ---------------------------------------------------------------------------
+  # 问题：`scripts/linux/backup-all.sh` / `verify-restore.sh` 的 dump 完整性判据
+  # （`--list` / `--data-only --file=/dev/null` / 全量 `--file=/dev/null` /
+  #   末 5 字节为 NUL / 逐表计数非空）**全部实测都在 PG 17.11**；
+  #   唯一一次 PG 18 的观察（append 后真实恢复 0、数据只剩 2 张表）没有仓内证据。
+  #
+  # 本 job 在 `postgres:18-alpine` 上：
+  #   1. 用仓库里真实的迁移（主应用 `drizzle/*.sql`、认证库 goose）建两个库 + 夹具；
+  #   2. 正向跑完三道门 + 尾判据 + 真实恢复 + 逐表计数逐字节 cmp；
+  #   3. 负向注入：尾部追加 / 尾部截断 / 数据区翻 1 字节 / 空库计数为空。
+  # 每一项打印「判据名 / 期望 / 实际」，失败以非零退出。
+  #
+  # ⚠️ **它不跑 `backup-all.sh` 本体**（那要 docker compose 整栈）。它是**同形的**
+  #    pg_dump / pg_restore 调用，不是整链。真 compose 全链属第三层，本提交不含。
+  # ⚠️ 客户端在 **service 容器内**执行（`docker exec`）：runner 预装的是 PG 16 一代的
+  #    pg_dump/pg_restore，对 PG 18 服务端会 `server version mismatch`。
+  #    这也和生产链路同形（backup-all.sh 也是 `compose exec` 里跑客户端）。
+  # ⚠️ 两个负向用例要求**稳定复现**：随机尾字节用**固定种子**（tests/ci/.../mutate.py），
+  #    数据区注入用**固定比例**，均不依赖运行时随机。
+  backup-dump:
+    name: Backup dump criteria on PostgreSQL 18
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # service 容器的 docker id：所有 psql / pg_dump / pg_restore 都经 `docker exec` 进去跑。
+      PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      # 判据脚本的工作目录（dump / 注入文件 / 日志落在这里，失败时整包上传）。
+      WORKDIR: ${{ runner.temp }}/pg-dump-criteria
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # 先跑纯逻辑自检：迁移解析、注入器确定性、尾判据、逐表计数 SQL 与
+      # scripts/linux/backup-all.sh 的逐字一致性。它**不需要 Docker 之外的任何服务**，
+      # 红了就说明判据本身坏了 —— 这样后面 PG 阶段的红才只可能归因于 PG 行为。
+      - name: Self-check the criteria harness (no database needed)
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh self-check
+
+      - name: Positive - migrated schema, real dump, all four gates, real restore
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh positive
+
+      - name: Negative - append, truncate, data-byte flip, empty counts
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh negative
+
+      # 判据的原始产物（dump、注入件、恢复日志、逐表计数）留成工件：
+      # 「门红了但看不出为什么」时，这些是唯一的第一手材料。
+      - name: Upload dump criteria artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-dump-criteria
+          path: ${{ runner.temp }}/pg-dump-criteria
+          retention-days: 14
 
   go:
     name: Go authentication service tests
