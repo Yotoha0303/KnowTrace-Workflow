@@ -11,12 +11,15 @@
 # 这份配置补的是**修复通道的形状**：把「一堆零散 PR」变成
 # 「每周一次、按类型分组的少量 PR」。
 #
-# 两个生态
+# 生态范围
 # --------
-# 本仓有**两个独立的 npm 项目**，必须分别声明：
-#   1. `/`                                  —— Next.js 应用（**参与部署**）
-#   2. `/services/go-user-system/frontend`  —— git subtree 引入的上游副本（**不参与部署**）
-# 漏掉任何一个，那个生态就退回默认策略（一堆零散 PR）。
+# 本仓原有**两个独立的 npm 项目**：`/`（Next.js 应用，参与部署）与
+# `/services/go-user-system/frontend`（上游副本，不参与部署）。
+#
+# **2026-10-19：后者已被删除**（issue #37 / 主应用已覆盖其全部能力：登录、注册、
+# 昵称、改密、RBAC 分配角色）。现只剩 `/` 一个。
+# 删除它同时消掉了两条 dependabot 告警（`postcss-selector-parser` 无同 major 修复、
+# `source-map-js` 的该 manifest 副本）。
 #
 # 分组（groups）为什么重要
 # ------------------------
@@ -25,7 +28,6 @@
 # 20 个独立 PR 则要判读 20 次 —— 那正是「悬着没人看」的成因之一。
 # **major 不分组**（单独一个 PR）：主版本升级要单独审，不能混在补丁里过。
 #
-# 注意：`tailwindcss` 的 major 在 frontend 被忽略，理由见那条 ignore 的注释。
 
 version: 2
 
@@ -51,35 +53,3 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
     # major 不分组 —— 每个主版本升级单独一个 PR，单独审。
-
-  # ── 认证服务的 React 前端（不参与部署）──────────────────────────────
-  - package-ecosystem: npm
-    directory: "/services/go-user-system/frontend"
-    schedule:
-      interval: weekly
-      day: tuesday
-      time: "09:00"
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    groups:
-      minor-and-patch:
-        applies-to: version-updates
-        update-types: ["minor", "patch"]
-      security:
-        applies-to: security-updates
-        patterns: ["*"]
-    ignore:
-      # 2026-10-06（KT-GAP-52）：`tailwindcss` 的**主版本**更新在这里忽略。
-      #
-      # 理由：v4 是破坏性变更（`postcss.config.cjs` 要改用 `@tailwindcss/postcss`、
-      # `src/index.css` 的 `@tailwind base/components/utilities` 要改成
-      # `@import "tailwindcss"`、一批工具类被重命名），
-      # 而**这个目录不参与部署**（`compose*.yaml` 无服务、nginx/Caddy 不引用、
-      # `services/go-user-system/Dockerfile` 只编译 Go 二进制）。
-      # **为一个不参与部署的目录做主版本迁移，风险与收益不成比例。**
-      #
-      # **只忽略 major**：minor / patch 照旧会提（安全补丁不该被这条挡住）。
-      # 若将来这个前端要接进部署，**先删掉这条 ignore**，再做 v4 迁移。
-      - dependency-name: "tailwindcss"
-        update-types: ["version-update:semver-major"]

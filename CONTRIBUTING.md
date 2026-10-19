@@ -31,17 +31,15 @@ pnpm lint
 pnpm test
 pnpm build
 cd services/go-user-system && go test ./...
-cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm run lint && npm test && npm run build
 ```
 
 与 `make check` 和 CI 的三个 job（`quality` / `go` / `auth-frontend`）一一对应。
 **这三处要一起改**——只改一处会让「本地过了」与「CI 过了」不再是同一件事（见 `.github/workflows/ci.yml` 的 `go` job 注释）。
 
-> **注意 `services/go-user-system/frontend` 的两点**：它是 `git subtree` 引入的上游副本，
-> 用 **npm**（自带 `package-lock.json`），不是 pnpm；它**自带一份 flat config**
-> （`eslint.config.mjs`），因为仓库根的 flat config 会向上查找并忽略整棵子树
-> （`globalIgnores` 里有 `services/go-user-system/**`），且 flat 模式没有 `--ext`。
-> 详见 `docs/08` §2.3.1。
+> **`services/go-user-system/frontend` 已于 2026-10-19 删除**（issue #37）。
+> 它是 `git subtree` 引入的上游副本，与主应用功能完全重复（登录/注册/昵称/改密/RBAC），
+> 且主应用已覆盖其全部能力（见 `src/app/account` 的 `assignRolesAction`）。
+> 原 auth-frontend CI job 一并移除。
 
 涉及迁移、鉴权、Workspace、导入导出或附件的改动，还应补充对应的真实数据库或端到端验证，并在 Pull Request 中区分单元测试、本地集成测试和部署验证。
 
