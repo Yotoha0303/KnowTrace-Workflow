@@ -66,3 +66,17 @@
 - **`pg_restore --no-owner` 以库 OWNER 身份恢复**已实测通过；**以非 OWNER 普通用户**恢复未测
   （生产上恢复用的是 compose 里配置的那个用户，通常是库 OWNER）。
 - **`monthly-ops.sh` 的镜像预热仍列 `mysql:8.0`**——属下一个提交（巡检/配置）。
+
+## 7. 回滚
+
+> 本节为 `docs/changes/README.md:38` 要求的「回滚」项，由三跳链裁决（`2026-10-19`）补登；
+> **本提交未执行回滚**，下列步骤在执行时须留实测输出。
+
+- **与备份端同一批次回滚（`2e019b5..2ac6fc7`）**。单独 revert 本提交（`7ca4c84`）会造成
+  「生产者是 PostgreSQL、消费者是 MySQL」的错配：`required_file` 名单要 `mysql.sql` / `mysql-counts.tsv`，
+  而备份端已不再产出 ⇒ 每次演练都在必需组件处 `die`（**会响**，不静默）。
+- **代价（如实）**：回滚窗口内没有可用的恢复演练载体。`ADR-0019` §5.5 的 **R2 档**写明
+  「需一次恢复演练；**未经演练的恢复 = 没有恢复**」——故回滚窗口必须落在 M4 观察期内且不长于它，
+  否则 R1/R2 都会退化成「有回滚方案、没演练过」。
+- **回滚后必须做**：跑一次 `verify-restore.sh`，确认 `RESTORE_VERIFY=PASS` 且输出键回到 `MYSQL_TABLES`。
+- **不可逆项**：无。`restore-mysql.ps1 → restore-postgres.ps1` 由 `git mv` 承载，revert 恢复原名与旧内容。

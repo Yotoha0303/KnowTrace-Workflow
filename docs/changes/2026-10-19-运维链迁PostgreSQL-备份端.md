@@ -75,3 +75,19 @@
   `backup-all.sh` 会停在 `Compose 服务未运行: auth-postgres` —— **有意失败**，不是回归。
   建议顺序：本分支与 M4 一并合入，或合入后**不启用**定时备份直至 M4 完成。
 - **`monthly-ops.sh` 的镜像预热与本提交不同步**：它仍在等 `mysql:8.0`。属后续提交（巡检/配置）。
+
+## 7. 回滚
+
+> 本节为 `docs/changes/README.md:38` 要求的「回滚」项，由三跳链裁决（`2026-10-19`）补登；
+> **本提交未执行回滚**，下列步骤在执行时须留实测输出。
+
+- **单独 revert 本提交（`2e019b5`）只在 compose 仍是 `auth-mysql` 时成立**：脚本退回
+  `mysql_counts()` + `mysqldump --single-transaction`，归档组件名退回 `mysql.sql` / `mysql-counts.tsv`。
+  M4 切库之后 revert，`backup-all.sh` 会停在 `Compose 服务未运行: auth-mysql`——**`die`，会响**。
+- **正确的回滚单元是 M5 整批（`2e019b5..2ac6fc7`），不是单个提交**：备份端产出 `auth-postgres.dump` /
+  `auth-postgres-counts.tsv`，恢复端（`7ca4c84`）按这两个名字做 `required_file` 检查（`verify-restore.sh:83-84`）。
+  只回滚备份端 ⇒ 恢复端 `die "备份组件缺失或为空: auth-postgres.dump"`，同样是**会响的失败**，不是静默。
+- **回滚后必须做**：连续跑两次 `backup-all.sh`（第二次验证不改状态），再跑一次 `verify-restore.sh`
+  并确认输出 `RESTORE_VERIFY=PASS` 与 `MYSQL_TABLES=…`。**退出码 0 不算验收**（`docs/changes/README.md` 第 4 条）。
+- **不可逆项**：无。本提交不删既有归档、不改 `compose.yaml`、不写数据库；`backup-mysql.ps1 → backup-postgres.ps1`
+  的改名由 `git mv` 承载，revert 恢复原名与旧内容。

@@ -60,3 +60,21 @@
   D1：没有实测就不编阈值。登记为待办。
 - **`EXPECTED_SERVICES` 在 M4 之前会与现状不符**：`ops.conf.example` 是模板，主机上真正生效的是
   `/etc/knowtrace/ops.conf`。M4 之前若已按模板部署，需要在该文件里改回 `auth-mysql`（已在模板注释里写明）。
+
+## 6. 回滚
+
+> 本节为 `docs/changes/README.md:38` 要求的「回滚」项，由三跳链裁决（`2026-10-19`）补登；
+> **本提交未执行回滚**，下列步骤在执行时须留实测输出。
+
+- **单独 revert 本提交会「部分生效」**：它只回滚**仓库里的文件**。`scripts/ops/ops.conf.example` 会回到
+  `auth-mysql`，但已部署主机上真正生效的是 `/etc/knowtrace/ops.conf`，**不受版本控制影响**
+  ⇒ 仓库与主机再次不一致，且这种不一致**不响**（模板与生效值分处两地）。
+  回滚时**必须同时**改主机配置——该动作只能由人做，见 `docs/CICD-待完成.md`。
+- **`security-check.sh` 的键名回滚会静默少一道防线**：`AUTH_DB_ROOT_PASSWORD` / `AUTH_DB_PASSWORD` 是根 `.env`
+  的实际键名（§3）。退回 `MYSQL_ROOT_PASSWORD` 就是查一个不存在的键——按 §1 表的口径，
+  「查旧键、不查新键 = 静默少一道防线」。
+- **`monthly-ops.sh` 的镜像预热**会退回为 `mysql:8.0` 预热，而 M4 之后 compose 里已无该实例：
+  预热对象与现状不符（具体表现未实测）。
+- **回滚后必须做**：重跑 §4 的 P1/P2（`bash -n` 5 个 shell、`python -m py_compile log_analyzer.py`），
+  并在主机上确认 `ops.conf` 的 `EXPECTED_SERVICES` 与 `docker compose ps` 的实际服务名一致。
+- **不可逆项**：无。
