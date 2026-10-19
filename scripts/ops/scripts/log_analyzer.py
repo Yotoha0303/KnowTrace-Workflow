@@ -72,14 +72,37 @@ _HIGH_SEVERITY = re.compile(
 _LEVEL_ERROR = re.compile(r"\b(error|err|eror)\b", re.IGNORECASE)
 _LEVEL_WARN = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
 
-# 键值形式的敏感信息：只保留键，值替换掉
+# 键值形式的敏感信息：只保留键，值替换掉。
+#
+# 值必须**整体**吃掉，否则会漏：`postgres_password="abc def"` 用 `\S+` 只吃 `"abc`，
+# 行里剩下 ` def"`（实测）。故值的形态按「带引号优先、否则非空白」匹配。
+# `pgpassfile`：`PGPASSFILE=/root/.pgpass:S3cretPass` —— 尾段是口令，整值替换（路径一并吃掉，
+# 宁可多删也不漏）。
 _SECRET_KV = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|apikey|"
     r"authorization|auth|bearer|cookie|session|private[_-]?key|"
-    r"mysql_pwd|postgres_password|pgpassword|jwt)\b\s*[:=]\s*\S+"
+    r"mysql_pwd|postgres_password|pgpassword|pgpassfile|jwt)\b\s*[:=]\s*"
+    r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 # URL 里的凭据 scheme://user:pass@host
-_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
+#
+# 旧写法 `[^/\s@]+@` 有两个漏形（均实测）：
+#   `postgres://u:p@ss@h/db`  → 只吃到第一个 `@`，残 `ss@h/db`
+#   `postgres://u:p/w@h/db`   → 口令里含 `/`，整体不匹配，**原文未改**
+# 改为「user 不含 :/@/空白」+「口令贪婪吃到最后一个 @」+「@ 后面必须紧跟主机字符」。
+#
+# 但 http(s) 要单独收紧：RFC 3986 的 userinfo 里 `/` 必须百分号编码，裸 `/` 不可能是口令。
+# 不加这条，`http://host:8080/path@x` 这类**无凭据** URL 会被误脱敏成 `http://***:***@x`
+# （实测）。故 http(s) 走「口令不含 /」的版本，其余 scheme（postgres/mysql/mongo/redis…）走贪婪版。
+_URL_CREDENTIALS_HTTP = re.compile(
+    r"(?i)\b(https?://)([^\s:/@]+):([^\s/@]*)(@)(?=[^\s/@])"
+)
+_URL_CREDENTIALS_OTHER = re.compile(
+    r"(?i)\b(?!https?://)([a-z][a-z0-9+.-]*://)([^\s:/@]+):([^\s]*)(@)(?=[^\s/@])"
+)
+# 独立出现的 `Bearer <token>` / `Basic <token>`（HTTP 头、gRPC metadata 常见）。
+# 与下面的键值规则不同：这里**没有键**，只有一个前缀词，故必须在键值规则之前单独处理。
+_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 
 # 归一化用的替换表（顺序敏感：先长后短）
 _NORMALIZERS: list[tuple[re.Pattern[str], str]] = [
@@ -104,10 +127,15 @@ _NORMALIZERS: list[tuple[re.Pattern[str], str]] = [
 
 _WHITESPACE = re.compile(r"\s+")
 
+# 每个模式最多保留多少条脱敏样本（与 --samples 的上限无关；--samples 只决定打印几条）
+_MAX_SAMPLES = 5
+
 
 def redact_line(line: str) -> str:
     """把日志行里的敏感值替换成 ``***``，保留键名与整体结构。"""
-    text = _URL_CREDENTIALS.sub(r"\1***:***@", line)
+    text = _BEARER.sub(lambda m: f"{m.group(1)} ***", line)
+    text = _URL_CREDENTIALS_HTTP.sub(r"\1***:***\4", text)
+    text = _URL_CREDENTIALS_OTHER.sub(r"\1***:***\4", text)
     text = _SECRET_KV.sub(lambda m: f"{m.group(1)}=***", text)
     return text
 
@@ -147,6 +175,8 @@ class PatternStat:
     count: int = 0
     severity: str = "OTHER"
     sample: str = ""
+    # 前几条**已脱敏**的原始行（供 --samples 打印）。上限见 max_samples。
+    samples: list[str] = field(default_factory=list)
     first_seen: datetime | None = None
     last_seen: datetime | None = None
 
@@ -284,6 +314,9 @@ def scan_lines(name: str, lines: list[str], *, truncated: bool) -> ContainerScan
             )
             scan.patterns[key] = stat
         stat.count += 1
+        # 样本行只留**脱敏后**的前几条（--samples 打印用；不落盘、不进基线）。
+        if len(stat.samples) < _MAX_SAMPLES:
+            stat.samples.append(redact_line(raw)[:400])
         if stamp:
             if stat.first_seen is None or stamp < stat.first_seen:
                 stat.first_seen = stamp
@@ -386,6 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--since", default="", help="时间窗口，例 24h / 7d / 168h（默认取 ops.conf）")
     parser.add_argument("--max-lines", type=int, default=0, help="单来源最大读取行数")
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=0,
+        metavar="N",
+        help="为高危模式各打印最多 N 条**脱敏后**的样本行（默认 0 = 不打印）",
+    )
     parser.add_argument(
         "--save-baseline",
         action="store_true",
@@ -507,6 +547,30 @@ def main(argv: list[str] | None = None) -> int:
     else:
         report.ok("log.truncated", "所有来源均在行数上限内，统计覆盖完整窗口")
 
+    # **空分母不得判绿**（AGENTS.md D3）。
+    #
+    # 原实现：零容器时 `lines_total == 0`、`all_stats` 为空，于是依次打印
+    # `log.patterns=OK`、`log.error-volume=OK`、`log.conclusion=OK（未发现错误模式）`，
+    # 退出码 0 —— **什么都没解析到，却报告一切正常**。
+    # 这与本项目反复踩到的「空分母 100%」是同一族：判据的输入坏了，输出看起来只是「正常」。
+    #
+    # 判据分三级（区分「没东西可看」与「看了且干净」）：
+    #   零来源（一个容器/文件都没解析到）      → FAIL：根本没有输入
+    #   有来源但读到 0 行                      → WARN：来源在、日志空
+    #   读到行、无 error/warn                  → OK  ：真的干净
+    lines_total = sum(scan.lines_scanned for scan in scans)
+    if not scans:
+        report.fail(
+            "log.sources",
+            "没有解析到任何容器或文件 —— 本次分析没有输入，结论不可用"
+            "（检查 docker 权限 / --containers / ops.conf 的 LOG_CONTAINERS）",
+        )
+    elif lines_total == 0:
+        report.warn(
+            "log.sources",
+            f"解析到 {len(scans)} 个来源，但读到 0 行日志（窗口 {window_raw}）—— 不能据此认为「没有错误」",
+        )
+
     # ---- 聚类结果 ---------------------------------------------------------
     all_stats: list[PatternStat] = []
     for scan in scans:
@@ -517,11 +581,13 @@ def main(argv: list[str] | None = None) -> int:
     warns = [item for item in all_stats if item.severity == "WARN"]
     error_total = sum(item.count for item in errors)
     warn_total = sum(item.count for item in warns)
-    lines_total = sum(scan.lines_scanned for scan in scans)
 
     report.section("2. 错误模式聚类（TOP {}）".format(top_n))
     if not all_stats:
-        report.ok("log.patterns", "窗口内没有匹配到 error/warn 模式")
+        if lines_total == 0:
+            report.warn("log.patterns", "没有可判定的日志行（读取 0 行）—— 这不是「没有错误」")
+        else:
+            report.ok("log.patterns", f"已读取 {lines_total} 行，窗口内没有匹配到 error/warn 模式")
     else:
         report.table(
             ["级别", "次数", "来源", "最近出现(UTC)", "归一化模式"],
@@ -540,13 +606,30 @@ def main(argv: list[str] | None = None) -> int:
     ][:top_n]
     report.section("3. 高危模式（panic / OOM / refused / no space 等）")
     if not high_risk:
-        report.ok("log.high-risk", "未发现高危模式")
+        if lines_total == 0:
+            report.warn("log.high-risk", "没有可判定的日志行（读取 0 行）—— 不能据此认为「没有高危模式」")
+        else:
+            report.ok("log.high-risk", "未发现高危模式")
     else:
         report.table(
             ["级别", "次数", "来源", "最近出现(UTC)", "归一化模式"],
             [stat.to_row() for stat in high_risk],
         )
-        report.note("高危模式只代表「关键字命中了」，是否需要处理要看上下文；原始行见 --samples。")
+        # `--samples N`：为每个高危模式打印最多 N 条**脱敏后**的原始行（每模式至多存 _MAX_SAMPLES 条）。
+        # 脱敏走 redact_line()，与报告其余部分同一套规则；**不打印未脱敏的原始行**。
+        if args.samples > 0:
+            for stat in high_risk:
+                shown = stat.samples[: args.samples]
+                if not shown:
+                    continue
+                report.note(f"样本（已脱敏）· {stat.container} · {stat.severity} · {stat.pattern[:80]}")
+                for line in shown:
+                    print(f"         {line}")
+        else:
+            report.note(
+                "高危模式只代表「关键字命中了」，是否需要处理要看上下文；"
+                "加 --samples N 可打印最多 N 条脱敏后的原始行。"
+            )
 
     # ---- 基线对比 ---------------------------------------------------------
     baseline_path = Path(args.baseline) if args.baseline else _baseline_path()
@@ -602,7 +685,13 @@ def main(argv: list[str] | None = None) -> int:
             f"ERROR 行数 {error_total} 超过阈值 {warn_errors}（窗口 {window_raw}）",
         )
     else:
-        report.ok("log.error-volume", f"ERROR 行数 {error_total}，低于阈值 {warn_errors}")
+        if lines_total == 0:
+            report.warn(
+                "log.error-volume",
+                "读到 0 行日志，ERROR 计数没有分母 —— 不能判「低于阈值」",
+            )
+        else:
+            report.ok("log.error-volume", f"ERROR 行数 {error_total}，低于阈值 {warn_errors}")
 
     new_error_patterns = [item for item in new_patterns if item.severity == "ERROR"]
     if new_error_patterns and len(new_error_patterns) >= warn_new_patterns:
@@ -613,7 +702,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if error_total == 0 and not new_patterns:
-        report.ok("log.conclusion", "窗口内未发现错误模式，且相对基线无新增")
+        if lines_total == 0:
+            # 空分母不得判绿：0 行读入时 error_total 恒为 0，这条 OK 是**没有依据**的。
+            report.warn("log.conclusion", "未读到任何日志行，无法给出「未发现错误模式」的结论")
+        else:
+            report.ok("log.conclusion", f"已读取 {lines_total} 行，窗口内未发现错误模式，且相对基线无新增")
 
     for text in (
         "本分析只覆盖所采集的来源与窗口；PLG 日志栈（Loki/Alloy）未运行时，"
