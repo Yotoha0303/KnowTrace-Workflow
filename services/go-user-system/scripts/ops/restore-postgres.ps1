@@ -122,13 +122,32 @@ $containerPath = "/tmp/go_user_system-restore-$($startedAt.ToString('yyyyMMdd-HH
 #   在维护库上看到的是**维护库自己**的表。
 # ⚠️ DROP/CREATE DATABASE 不能在一个 -c 里用分号连写：psql 会把多语句当隐式事务块，
 #   PG 报 "DROP DATABASE cannot run inside a transaction block"。故拆成两条 -Command。
-$adminArguments = @("exec", "-T", $ComposeService, "psql", "--username=$DatabaseUser", "--dbname=postgres", "--no-psqlrc", "--tuples-only", "--no-align")
-$drillArguments = @("exec", "-T", $ComposeService, "psql", "--username=$DatabaseUser", "--dbname=$RestoreDatabase", "--no-psqlrc", "--tuples-only", "--no-align")
+# ⚠️ `--set=ON_ERROR_STOP=1`（F5）：不加时 psql **遇到 SQL 错误仍以 0 退出**，
+#   于是「DROP 失败 / 建库失败 / 查询打错表名」全都会被当成成功——判据静默失效。
+#   加在参数里而不是只加在 -c 上：这三条调用**都经 stdin 传 SQL**，必须由 psql 自己执行期停止。
+$adminArguments = @("exec", "-T", $ComposeService, "psql", "--username=$DatabaseUser", "--dbname=postgres", "--no-psqlrc", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1")
+$drillArguments = @("exec", "-T", $ComposeService, "psql", "--username=$DatabaseUser", "--dbname=$RestoreDatabase", "--no-psqlrc", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1")
 $dropSql = "DROP DATABASE IF EXISTS $RestoreDatabase;"
 $createSql = "CREATE DATABASE $RestoreDatabase OWNER $DatabaseUser;"
 # goose 的 PG 版本表是 goose_db_version(version_id, is_applied, tstamp)；
 # 「当前版本」= 已应用的最大 version_id，脚本/文件版本号须一致。
-$tableCountSql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';"
+#
+# F4：断言**表集合**，不是表数。原先只有 `table_count > 0`——只含 2 张表的 dump
+# （实测：`pg_dump -t public.users -t public.goose_db_version`）同样能让它通过。
+# 期望集合来自 migrations 00001–00006：
+#   00001 users · 00003 refresh_tokens · 00004 roles/permissions/user_roles/role_permissions
+#   + goose 自己的版本表。**新增迁移时必须同步这里**，否则演练会开始报「缺表」。
+$expectedTables = @(
+    'goose_db_version',
+    'permissions',
+    'refresh_tokens',
+    'role_permissions',
+    'roles',
+    'user_roles',
+    'users'
+)
+$expectedMigrationVersion = 6
+$tableListSql = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name;"
 $migrationVersionSql = "SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied;"
 
 try {
@@ -148,10 +167,25 @@ try {
         "--username=$DatabaseUser", "--dbname=$RestoreDatabase",
         "--no-owner", "--no-privileges", "--exit-on-error", $containerPath) | Out-Null
 
-    $tableCount = ((Invoke-ComposeWithInput -InputText $tableCountSql -Arguments $drillArguments) | Select-Object -Last 1).Trim()
+    # F4：断言**表集合**（原先只断言 table_count>0 —— 只含 2 张表的 dump 也能过）。
+    $restoredTables = @(
+        (Invoke-ComposeWithInput -InputText $tableListSql -Arguments $drillArguments) |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '\S' }
+    )
+    $missingTables = @($expectedTables | Where-Object { $restoredTables -notcontains $_ })
+    $extraTables = @($restoredTables | Where-Object { $expectedTables -notcontains $_ })
     $migrationVersion = ((Invoke-ComposeWithInput -InputText $migrationVersionSql -Arguments $drillArguments) | Select-Object -Last 1).Trim()
-    if ([int]$tableCount -le 0 -or [int64]$migrationVersion -le 0) {
-        throw "restored database validation failed: tables=$tableCount migration=$migrationVersion"
+    if ($missingTables.Count -gt 0) {
+        throw ("restored database validation failed: missing tables [{0}]; restored tables [{1}]" -f `
+            ($missingTables -join ', '), ($restoredTables -join ', '))
+    }
+    if (-not ($migrationVersion -match '^\d+$') -or [int64]$migrationVersion -lt $expectedMigrationVersion) {
+        throw "restored database validation failed: migration version $migrationVersion < expected $expectedMigrationVersion"
+    }
+    $tableCount = $restoredTables.Count
+    if ($extraTables.Count -gt 0) {
+        Write-Warning "restored database has tables not in the expected set: $($extraTables -join ', ')"
     }
 
     $completedAt = (Get-Date).ToUniversalTime()
@@ -167,6 +201,7 @@ try {
         completed_at_utc    = $completedAt.ToString("o")
         duration_seconds    = [math]::Round(($completedAt - $startedAt).TotalSeconds, 3)
         table_count         = [int]$tableCount
+        tables              = @($restoredTables)
         migration_version   = [int64]$migrationVersion
     }
     $evidencePath = Join-Path $EvidenceDirectory "restore-drill-$($completedAt.ToString('yyyyMMdd-HHmmss')).json"
@@ -175,6 +210,7 @@ try {
     [pscustomobject]@{
         RestoreDatabase  = $RestoreDatabase
         TableCount       = [int]$tableCount
+        Tables           = ($restoredTables -join ', ')
         MigrationVersion = [int64]$migrationVersion
         DurationSeconds  = $evidence.duration_seconds
         EvidencePath     = $evidencePath
