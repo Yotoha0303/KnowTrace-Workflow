@@ -92,7 +92,9 @@ BACKUP_TIMER_UNIT=knowtrace-workflow-backup.timer
 SYSTEMD_FAILED_ALLOWLIST=repass.service
 
 # 核心服务：缺失 = FAIL
-EXPECTED_SERVICES=app auth postgres auth-mysql auth-redis
+# 认证库服务名随 ADR-0019 改为 PostgreSQL；M4（compose 切库）之前主机上仍叫 auth-mysql，
+# 那期间请在 /etc/knowtrace/ops.conf 里显式覆盖本行——否则 daily 巡检会报一个假的「缺容器」。
+EXPECTED_SERVICES=app auth postgres auth-postgres auth-redis
 # 监控组件：缺失 = WARN（按需策略允许临时停）
 OPTIONAL_SERVICES=prometheus grafana alertmanager blackbox-exporter node-exporter
 

@@ -385,7 +385,7 @@ check_env_file "$OBSERVABILITY_ENV_FILE" "observability"
 
 # 关键密钥项：只判断「是否仍为默认占位值」或「缺失」，绝不打印值本身
 if [[ -f "$ENV_FILE" ]]; then
-    for key in MYSQL_ROOT_PASSWORD JWT_SECRET AUTH_COOKIE_SECRET METRICS_BEARER_TOKEN; do
+    for key in AUTH_DB_ROOT_PASSWORD AUTH_DB_PASSWORD JWT_SECRET AUTH_COOKIE_SECRET METRICS_BEARER_TOKEN; do
         state="$(env_key_state "$ENV_FILE" "$key")"
         case "$state" in
             set)         ops_ok "env.key.$key" "已设置（值未读取、未输出）" ;;

@@ -336,7 +336,10 @@ if [[ "$tmp_free_kib" =~ ^[0-9]+$ ]]; then
     fi
 fi
 
-# 内存：演练要同时起 postgres / mysql / redis 三个临时容器
+# 内存：演练要同时起 postgres / auth-postgres / redis 三个临时容器
+# ⚠️ 500MiB 阈值是在 MySQL 时代按「三容器」标定的（ADR-0019 §5.4(c) 点名过）。
+#    auth-postgres 是**第二个 PG 实例**，内存画像比 MySQL 更接近主应用 PG——
+#    本阈值**未按新组合重算**，登记为待办，不要把它当成已核定值。
 mem_avail_mib="$(awk '/^MemAvailable:/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || printf '0')"
 if [[ "$mem_avail_mib" =~ ^[0-9]+$ && "$mem_avail_mib" -gt 0 ]]; then
     if (( mem_avail_mib < 500 )); then
@@ -349,7 +352,7 @@ fi
 # 演练所需镜像必须已在本地（verify-restore.sh 会自己检查，这里先提示）
 if (( have_docker == 1 )); then
     missing_images=""
-    for image in "postgres:18-alpine" "mysql:8.0" "redis:7.4-alpine"; do
+    for image in "postgres:18-alpine" "redis:7.4-alpine"; do
         docker image inspect "$image" >/dev/null 2>&1 || missing_images="${missing_images}${image} "
     done
     if [[ -z "$missing_images" ]]; then

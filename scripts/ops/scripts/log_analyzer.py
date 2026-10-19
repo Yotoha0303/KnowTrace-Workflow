@@ -76,7 +76,7 @@ _LEVEL_WARN = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
 _SECRET_KV = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|apikey|"
     r"authorization|auth|bearer|cookie|session|private[_-]?key|"
-    r"mysql_pwd|postgres_password|jwt)\b\s*[:=]\s*\S+"
+    r"mysql_pwd|postgres_password|pgpassword|jwt)\b\s*[:=]\s*\S+"
 )
 # URL 里的凭据 scheme://user:pass@host
 _URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
@@ -406,7 +406,7 @@ def _resolve_containers(conf, explicit: str) -> tuple[list[str], str]:
     if configured:
         return configured, "ops.conf LOG_CONTAINERS"
 
-    services = conf.get_list("EXPECTED_SERVICES", ["app", "auth", "postgres", "auth-mysql", "auth-redis"])
+    services = conf.get_list("EXPECTED_SERVICES", ["app", "auth", "postgres", "auth-postgres", "auth-redis"])
     project_dir = conf.get("PROJECT_DIR", "/opt/knowtrace")
     compose_file = str(Path(project_dir) / "compose.yaml")
     names: list[str] = []
@@ -420,7 +420,7 @@ def _resolve_containers(conf, explicit: str) -> tuple[list[str], str]:
         # 改为先问 compose 要容器，与项目名解耦。
         #
         # ⚠ 若将来仍要用 docker 的 name 过滤器：它是**正则**匹配而非精确匹配，
-        #   `name=^knowtrace-auth-` 会把 auth、auth-mysql、auth-redis 全匹配上，
+        #   `name=^knowtrace-auth-` 会把 auth、auth-postgres、auth-redis 全匹配上，
         #   导致同一容器被分析多次（统计翻倍）。所以下面仍做去重。
         result = run_readonly(
             ["docker", "compose", "--project-directory", project_dir,

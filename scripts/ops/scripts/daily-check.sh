@@ -347,7 +347,7 @@ if (( have_docker == 1 )); then
 
     # 期望存在的容器（服务名 -> 容器名前缀 knowtrace-<service>-1）
     expected_missing=""
-    for service in $(ops_conf_list EXPECTED_SERVICES "app auth postgres auth-mysql auth-redis"); do
+    for service in $(ops_conf_list EXPECTED_SERVICES "app auth postgres auth-postgres auth-redis"); do
         if ! ops_service_running "$service"; then
             expected_missing="${expected_missing}${service} "
         fi

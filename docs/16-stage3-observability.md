@@ -325,7 +325,7 @@ curl -sS http://127.0.0.1:9093/api/v2/status
 
 ### Auth not ready
 
-同时检查 auth、MySQL、Redis readiness 和认证日志。恢复后必须验证登录/刷新，而不只看容器 running。
+同时检查 auth、PostgreSQL（认证库）、Redis readiness 和认证日志。恢复后必须验证登录/刷新，而不只看容器 running。
 
 ### Request errors
 
