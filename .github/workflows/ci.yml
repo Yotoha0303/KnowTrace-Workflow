@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -97,6 +97,43 @@ jobs:
 
       - name: Build production bundle
         run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # 静态脚本语法门（M5 三跳链 03 环阻断项 G-6 的第一层）
+  # ---------------------------------------------------------------------------
+  # 问题：`backup-all.sh` / `verify-restore.sh` / `security-check.sh` / `log_analyzer.py` /
+  # `monthly-ops.sh` / 备份恢复 `.ps1` 在本文件里**调用 0 处** —— 它们是运维链的实际执行者，
+  # 却从未被任何自动化门解析过一次。一个语法错只会在**服务器上、备份窗口里**才暴露。
+  #
+  # 本 job 是**静态门**，不是证据：它只证明「脚本能被各自的解析器读懂」，
+  # **不证明**脚本行为正确。行为判据属于「第二层」，不在本提交。
+  #
+  # 覆盖（tests/ci/static-script-gate.ps1 实现）：
+  #   *.sh  -> bash -n            （parses, 不执行）
+  #   *.py  -> python -m py_compile
+  #   *.ps1 -> PowerShell AST 解析器
+  # 三条硬要求：① 文件数按**目录递归**统计，扫描到 0 个**判失败**（空分母不得判绿，D3）；
+  #             ② 任一文件解析失败即非零退出；③ 缺 bash / python 也判失败，不静默跳过。
+  #
+  # 为什么用 pwsh 而不是写三个 bash 块：`.ps1` 的语法只能用 PowerShell 自己的解析器判，
+  # ubuntu-latest 预装 pwsh，一个 job 覆盖三种语言、一处维护。
+  #
+  # 负向验证（本机实测，见 docs/changes/2026-10-19-M5修复-F9-CI判据.md）：
+  #   注入 sh / py / ps1 语法错各一次 -> 该步 exit 1；还原后 exit 0。
+  # ⚠️ 本机**没有 pwsh**（只有 Windows PowerShell 5.1），故 CI 上的 pwsh 7 路径
+  #    本机无法验证——脚本刻意只用 5.1 也支持的 API（Parser::ParseFile / Get-ChildItem）。
+  static-script-gate:
+    name: Static script syntax gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Parse every shell, Python and PowerShell script
+        shell: pwsh
+        run: ./tests/ci/static-script-gate.ps1
 
   go:
     name: Go authentication service tests
