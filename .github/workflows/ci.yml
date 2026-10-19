@@ -177,12 +177,13 @@ jobs:
           --health-retries 20
 
     env:
-      # service 容器的 docker id：所有 psql / pg_dump / pg_restore 都经 `docker exec` 进去跑。
-      PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
       PGUSER: postgres
       PGPASSWORD: postgres
-      # 判据脚本的工作目录（dump / 注入文件 / 日志落在这里，失败时整包上传）。
-      WORKDIR: ${{ runner.temp }}/pg-dump-criteria
+      # ⚠️ `job` 与 `runner` 上下文**在 job 级 env 里不可用**（GitHub 只在 step 级 env 提供），
+      #    放在这里会让整个 workflow 解析失败：
+      #    "Unrecognized named-value: 'job'" —— 而且失败形态是**该 push 上所有 job 都不跑**，
+      #    不是这一个 job 红。2026-10-19 实测（run 39258541786：jobs 为空、conclusion=failure）。
+      #    故 `PG_SERVICE_CONTAINER` 与 `WORKDIR` 下沉到每个 step 的 env。
 
     steps:
       - name: Check out repository
@@ -192,12 +193,20 @@ jobs:
       # scripts/linux/backup-all.sh 的逐字一致性。它**不需要 Docker 之外的任何服务**，
       # 红了就说明判据本身坏了 —— 这样后面 PG 阶段的红才只可能归因于 PG 行为。
       - name: Self-check the criteria harness (no database needed)
+        env:
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
         run: ./tests/ci/pg-dump-criteria/run-criteria.sh self-check
 
       - name: Positive - migrated schema, real dump, all four gates, real restore
+        env:
+          PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
         run: ./tests/ci/pg-dump-criteria/run-criteria.sh positive
 
       - name: Negative - append, truncate, data-byte flip, empty counts
+        env:
+          PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
         run: ./tests/ci/pg-dump-criteria/run-criteria.sh negative
 
       # 判据的原始产物（dump、注入件、恢复日志、逐表计数）留成工件：
