@@ -196,7 +196,12 @@ log "导出 PostgreSQL"
   --no-owner \
   --no-privileges >"$incomplete_dir/postgres.dump"
 "${compose[@]}" exec -T postgres pg_restore --list <"$incomplete_dir/postgres.dump" >/dev/null
+# ⚠️ 逐表计数**为空也不得落归档**：空清单与恢复端的空清单逐字节 cmp 是「相等」的，
+#    于是恢复演练会对一份没有行数依据的备份判 PASS（空分母判绿，AGENTS.md D3）。
+#    psql 失败本身由 pipefail 拦下；这里拦的是「psql 成功但输出 0 行」。
 postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/postgres-counts.tsv"
+[[ -s "$incomplete_dir/postgres-counts.tsv" ]] \
+  || die "主应用逐表计数为空（postgres_counts 无输出）——备份未完成，不落归档"
 
 log "导出认证 PostgreSQL"
 # 与主应用 postgres.dump 同形（--format=custom）：恢复端用同一套 pg_restore 路径。
@@ -216,6 +221,8 @@ log "导出认证 PostgreSQL"
 "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --data-only --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
   || die "认证库 dump 数据块不完整（全量读取失败）——备份未完成，不落归档"
 auth_postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/auth-postgres-counts.tsv"
+[[ -s "$incomplete_dir/auth-postgres-counts.tsv" ]] \
+  || die "认证库逐表计数为空（auth_postgres_counts 无输出）——备份未完成，不落归档"
 
 log "生成 Redis RDB 快照"
 redis_key_count="$("${compose[@]}" exec -T auth-redis redis-cli --raw DBSIZE)"
