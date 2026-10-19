@@ -349,10 +349,22 @@ if [[ "$mem_avail_mib" =~ ^[0-9]+$ && "$mem_avail_mib" -gt 0 ]]; then
     fi
 fi
 
-# 演练所需镜像必须已在本地（verify-restore.sh 会自己检查，这里先提示）
+# 演练所需镜像必须已在本地（verify-restore.sh 会自己检查，这里先提示）。
+#
+# ⚠️ 变量名必须与 **verify-restore.sh 读的那一组**一致：POSTGRES_IMAGE /
+#    AUTH_POSTGRES_IMAGE / REDIS_IMAGE（那里用 `:-` 给同样的默认值）。
+#    原先这里写死 `"postgres:18-alpine" "redis:7.4-alpine"`，既漏了认证库镜像，
+#    也**无视 ops.conf / 环境变量里的覆盖** —— 镜像换了以后预检报「已存在」，
+#    而演练脚本按新名字找不到镜像（反之亦然：预检报缺、演练其实能跑）。
+#    预检与演练必须读同一组变量，否则这条提示不携带信息。
+POSTGRES_IMAGE="$(ops_conf_get POSTGRES_IMAGE postgres:18-alpine)"
+AUTH_POSTGRES_IMAGE="$(ops_conf_get AUTH_POSTGRES_IMAGE postgres:18-alpine)"
+REDIS_IMAGE="$(ops_conf_get REDIS_IMAGE redis:7.4-alpine)"
 if (( have_docker == 1 )); then
     missing_images=""
-    for image in "postgres:18-alpine" "redis:7.4-alpine"; do
+    for image in "$POSTGRES_IMAGE" "$AUTH_POSTGRES_IMAGE" "$REDIS_IMAGE"; do
+        # 主库与认证库通常同镜像，去重后再报，避免同一名字列两遍
+        [[ "${missing_images}" == *"${image} "* ]] && continue
         docker image inspect "$image" >/dev/null 2>&1 || missing_images="${missing_images}${image} "
     done
     if [[ -z "$missing_images" ]]; then

@@ -385,6 +385,17 @@ for system_config in \
   fi
 done
 
+# 镜像名从**容器实测**，不写字面量：字面量会在镜像升级后与事实脱节，
+# 而 metadata 正是恢复端判断「用哪个镜像演练」的依据（不一致 ⇒ 演练验的不是同一组合）。
+inspect_image() {
+  local service_name="$1" container_id image_name
+  container_id="$("${compose[@]}" ps -q "$service_name")"
+  [[ -n "$container_id" ]] || die "读不到 Compose 服务 $service_name 的容器 ID"
+  image_name="$(docker inspect --format '{{.Config.Image}}' "$container_id")"
+  [[ -n "$image_name" ]] || die "读不到 $service_name 容器的实际镜像名"
+  printf '%s' "$image_name"
+}
+
 application_commit="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 cat >"$incomplete_dir/metadata.txt" <<EOF
 schema_version=1
@@ -395,9 +406,9 @@ application_commit=$application_commit
 compose_overlay=$([[ -f compose.production.yaml ]] && printf 'compose.production.yaml' || printf 'none')
 quiesced_writes=$QUIESCE_WRITES
 consistency=$([[ "$QUIESCE_WRITES" == "1" ]] && printf 'application-writes-stopped' || printf 'per-datastore-only')
-postgres_image=postgres:18-alpine
-auth_postgres_image=$AUTH_POSTGRES_IMAGE
-redis_image=redis:7.4-alpine
+postgres_image=$(inspect_image postgres)
+auth_postgres_image=$(inspect_image "$AUTH_POSTGRES_SERVICE")
+redis_image=$(inspect_image auth-redis)
 postgres_db=$postgres_db_name
 auth_postgres_db=$auth_postgres_db_name
 postgres_dump_bytes=$(stat -c %s "$incomplete_dir/postgres.dump")
