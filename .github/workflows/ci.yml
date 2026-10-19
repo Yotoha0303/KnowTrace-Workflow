@@ -496,7 +496,10 @@ jobs:
             echo "库里没有账号 ${KNOWTRACE_ADMIN_USERNAME} —— 种子没建出来"
             exit 1
           fi
-          roles="${row#*$'	'}"
+          # `psql -tA` 的字段分隔符是 `|`（不是 TAB —— 那是 `mysql -N -B` 的行为）。
+          # 原写法按 TAB 切，在 psql 下切不掉前缀 ⇒ roles 拿到整行
+          # `CiAdmin|admin,user`，",admin,user," 里找不到 ",admin," ⇒ 误报。
+          roles="${row#*|}"
           if [[ ",$roles," != *",admin,"* ]]; then
             echo "账号 ${KNOWTRACE_ADMIN_USERNAME} 存在，但没有 admin 角色（实际：${roles}）"
             exit 1
