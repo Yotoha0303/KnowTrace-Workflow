@@ -4,7 +4,11 @@ set -Eeuo pipefail
 umask 077
 
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18-alpine}"
-MYSQL_IMAGE="${MYSQL_IMAGE:-mysql:8.0}"
+# 认证库（ADR-0019：MySQL → PostgreSQL）。与主应用**同镜像**，故只需预热一个镜像；
+# 仍是**独立实例、独立库**（ADR §4 Option D 未采纳合并）。
+AUTH_POSTGRES_IMAGE="${AUTH_POSTGRES_IMAGE:-postgres:18-alpine}"
+AUTH_POSTGRES_USER="${AUTH_POSTGRES_USER:-go_user_system}"
+AUTH_POSTGRES_DB="${AUTH_POSTGRES_DB:-go_user_system}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7.4-alpine}"
 
 log() {
@@ -76,8 +80,8 @@ for required_file in \
   metadata.txt \
   postgres.dump \
   postgres-counts.tsv \
-  mysql.sql \
-  mysql-counts.tsv \
+  auth-postgres.dump \
+  auth-postgres-counts.tsv \
   redis.rdb \
   redis-key-count.txt \
   uploads.tar.gz \
@@ -92,7 +96,7 @@ if [[ ! -s "$bundle_dir/config/.env" ]]; then
   log "WARNING: 备份中没有 config/.env；灾难恢复时需要从独立密钥库补齐" >&2
 fi
 
-for image_name in "$POSTGRES_IMAGE" "$MYSQL_IMAGE" "$REDIS_IMAGE"; do
+for image_name in "$POSTGRES_IMAGE" "$AUTH_POSTGRES_IMAGE" "$REDIS_IMAGE"; do
   docker image inspect "$image_name" >/dev/null 2>&1 || die "本机没有恢复演练所需镜像: $image_name"
 done
 
@@ -118,15 +122,10 @@ remove_test_container() {
   docker rm --force --volumes "$container_name" >/dev/null
 }
 
-postgres_counts_container() {
-  local container_name="$1"
-  docker exec -i "$container_name" psql \
-    --username=knowtrace \
-    --dbname=knowtrace \
-    --no-psqlrc \
-    --tuples-only \
-    --no-align \
-    --field-separator=$'\t' <<'SQL'
+# 逐表行数（PostgreSQL）。主应用与认证库**共用这一个程序**——恢复端就是把它的输出
+# 与归档里的 *-counts.tsv 逐字节 cmp。\gexec 展开表名，不在 shell 里拼标识符。
+emit_pg_table_counts_sql() {
+  cat <<'SQL'
 SELECT format(
   'SELECT %L AS table_name, count(*) AS row_count FROM %I.%I;',
   schemaname || '.' || relname,
@@ -139,22 +138,26 @@ ORDER BY schemaname, relname
 SQL
 }
 
-mysql_counts_container() {
+postgres_counts_container() {
   local container_name="$1"
-  local table_name
-  local row_count
-  local table_list
+  emit_pg_table_counts_sql | docker exec -i "$container_name" psql \
+    --username=knowtrace \
+    --dbname=knowtrace \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --field-separator=$'\t'
+}
 
-  table_list="$(docker exec "$container_name" sh -ec \
-    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --batch --skip-column-names --user=root --database=go_user_system --execute="SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = '\''BASE TABLE'\'' ORDER BY TABLE_NAME"')"
-
-  while IFS= read -r table_name; do
-    [[ -n "$table_name" ]] || continue
-    [[ "$table_name" =~ ^[A-Za-z0-9_]+$ ]] || die "MySQL 表名包含未支持字符: $table_name"
-    row_count="$(docker exec "$container_name" sh -ec \
-      "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql --batch --skip-column-names --user=root --database=go_user_system --execute='SELECT COUNT(*) FROM \`$table_name\`'")"
-    printf '%s\t%s\n' "$table_name" "$row_count"
-  done <<<"$table_list"
+auth_postgres_counts_container() {
+  local container_name="$1"
+  emit_pg_table_counts_sql | docker exec -i "$container_name" psql \
+    --username="$AUTH_POSTGRES_USER" \
+    --dbname="$AUTH_POSTGRES_DB" \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --field-separator=$'\t'
 }
 
 run_id="$$-$RANDOM"
@@ -180,27 +183,34 @@ cmp --silent "$bundle_dir/postgres-counts.tsv" "$scratch_dir/postgres-restored.t
   || { diff --unified "$bundle_dir/postgres-counts.tsv" "$scratch_dir/postgres-restored.tsv" >&2 || true; die "PostgreSQL 表行数与备份时不一致"; }
 remove_test_container "$pg_container"
 
-mysql_container="knowtrace-restore-check-mysql-$run_id"
+auth_pg_container="knowtrace-restore-check-authpg-$run_id"
 
-log "在无端口、无生产卷的临时 MySQL 容器中恢复"
+log "在无端口、无生产卷的临时 PostgreSQL 容器中恢复认证库"
 docker run --detach \
-  --name "$mysql_container" \
+  --name "$auth_pg_container" \
   --label com.knowtrace-workflow.purpose=restore-check \
   --network none \
-  --env MYSQL_ROOT_PASSWORD=restore-check-only \
-  --env MYSQL_DATABASE=go_user_system \
-  "$MYSQL_IMAGE" --skip-log-bin >/dev/null
-containers+=("$mysql_container")
-wait_for_command "$mysql_container" 90 sh -ec \
-  'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --batch --skip-column-names --user=root --execute="SELECT 1"' \
-  || die "临时 MySQL 未就绪"
-docker cp "$bundle_dir/mysql.sql" "$mysql_container:/tmp/mysql.sql"
-docker exec "$mysql_container" sh -ec \
-  'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root go_user_system </tmp/mysql.sql'
-mysql_counts_container "$mysql_container" | sort >"$scratch_dir/mysql-restored.tsv"
-cmp --silent "$bundle_dir/mysql-counts.tsv" "$scratch_dir/mysql-restored.tsv" \
-  || { diff --unified "$bundle_dir/mysql-counts.tsv" "$scratch_dir/mysql-restored.tsv" >&2 || true; die "MySQL 表行数与备份时不一致"; }
-remove_test_container "$mysql_container"
+  --env POSTGRES_DB="$AUTH_POSTGRES_DB" \
+  --env POSTGRES_USER="$AUTH_POSTGRES_USER" \
+  --env POSTGRES_PASSWORD=restore-check-only \
+  "$AUTH_POSTGRES_IMAGE" >/dev/null
+containers+=("$auth_pg_container")
+wait_for_command "$auth_pg_container" 60 pg_isready \
+  --username="$AUTH_POSTGRES_USER" --dbname="$AUTH_POSTGRES_DB" \
+  || die "临时认证 PostgreSQL 未就绪"
+docker cp "$bundle_dir/auth-postgres.dump" "$auth_pg_container:/tmp/auth-postgres.dump"
+# 先校验「可解析 + 数据块完整」，再恢复：--list 只读 TOC，抓不到尾部截断；
+# --data-only 配 --file=/dev/null 会把数据块完整读一遍（不写库、不连库）。
+docker exec "$auth_pg_container" sh -ec 'pg_restore --list /tmp/auth-postgres.dump >/dev/null' \
+  || die "认证库 dump 不可解析（pg_restore --list 失败）"
+docker exec "$auth_pg_container" sh -ec 'pg_restore --data-only --file=/dev/null /tmp/auth-postgres.dump >/dev/null' \
+  || die "认证库 dump 数据块不完整（全量读取失败）"
+docker exec "$auth_pg_container" sh -ec \
+  'pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-owner --no-privileges --exit-on-error /tmp/auth-postgres.dump'
+auth_postgres_counts_container "$auth_pg_container" | sed '/^[[:space:]]*$/d' | sort >"$scratch_dir/auth-postgres-restored.tsv"
+cmp --silent "$bundle_dir/auth-postgres-counts.tsv" "$scratch_dir/auth-postgres-restored.tsv" \
+  || { diff --unified "$bundle_dir/auth-postgres-counts.tsv" "$scratch_dir/auth-postgres-restored.tsv" >&2 || true; die "认证 PostgreSQL 表行数与备份时不一致"; }
+remove_test_container "$auth_pg_container"
 
 redis_container="knowtrace-restore-check-redis-$run_id"
 
@@ -242,7 +252,7 @@ source_upload_bytes="$(awk -F= '$1 == "total_bytes" {print $2}' "$bundle_dir/upl
 log "恢复演练通过；未连接生产网络、未挂载生产卷、未改写生产数据库"
 printf 'RESTORE_VERIFY=PASS\n'
 printf 'POSTGRES_TABLES=%s\n' "$(wc -l <"$bundle_dir/postgres-counts.tsv" | tr -d ' ')"
-printf 'MYSQL_TABLES=%s\n' "$(wc -l <"$bundle_dir/mysql-counts.tsv" | tr -d ' ')"
+printf 'AUTH_POSTGRES_TABLES=%s\n' "$(wc -l <"$bundle_dir/auth-postgres-counts.tsv" | tr -d ' ')"
 printf 'REDIS_KEYS_SOURCE=%s\n' "$source_redis_count"
 printf 'REDIS_KEYS_RESTORED=%s\n' "$restored_redis_count"
 printf 'UPLOAD_FILES=%s\n' "$restored_upload_count"
