@@ -14,7 +14,7 @@ try {
   }
 
   Write-Output "KnowTrace-Workflow PostgreSQL：$knowledgeBackup"
-  Write-Output "go-user-system MySQL：$authBackup"
+  Write-Output "go-user-system PostgreSQL：$authBackup"
   if ($uploadBackup) { Write-Output "证据图片：$uploadBackup" }
 } finally {
   Pop-Location

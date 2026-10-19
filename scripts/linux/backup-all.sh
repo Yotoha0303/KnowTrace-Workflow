@@ -12,6 +12,16 @@ QUIESCE_WRITES="${QUIESCE_WRITES:-1}"
 APP_READY_URL="${APP_READY_URL:-http://127.0.0.1:3000/api/health/ready}"
 AUTH_READY_URL="${AUTH_READY_URL:-http://127.0.0.1:8082/readyz}"
 
+# 认证库（ADR-0019：MySQL → PostgreSQL）。
+# ⚠️ 服务名/库名/用户名**刻意可配置**：它们由 compose 决定，而 compose 属 M4（切库）。
+#    本脚本**不**硬编码"新容器叫什么"——只给一个目标默认值，部署时按 compose 实际值覆盖。
+# ⚠️ 合并顺序：本脚本要求认证库已是 PostgreSQL。在 compose.yaml 切库（M4）**之前**合并本脚本，
+#    备份链会停在「Compose 服务未运行: auth-postgres」——这是**有意**的失败，不是回归。
+AUTH_POSTGRES_SERVICE="${AUTH_POSTGRES_SERVICE:-auth-postgres}"
+AUTH_POSTGRES_USER="${AUTH_POSTGRES_USER:-go_user_system}"
+AUTH_POSTGRES_DB="${AUTH_POSTGRES_DB:-go_user_system}"
+AUTH_POSTGRES_IMAGE="${AUTH_POSTGRES_IMAGE:-postgres:18-alpine}"
+
 log() {
   printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
@@ -47,7 +57,7 @@ fi
 compose=(docker compose --project-directory "$PROJECT_DIR" "${compose_files[@]}")
 
 running_services="$("${compose[@]}" ps --status running --services)"
-for service_name in postgres auth-mysql auth-redis auth app; do
+for service_name in postgres "$AUTH_POSTGRES_SERVICE" auth-redis auth app; do
   grep -Fxq "$service_name" <<<"$running_services" || die "Compose 服务未运行: $service_name"
 done
 
@@ -130,14 +140,14 @@ on_exit() {
 }
 trap on_exit EXIT
 
-postgres_counts() {
-  "${compose[@]}" exec -T postgres psql \
-    --username=knowtrace_workflow \
-    --dbname=knowtrace_workflow \
-    --no-psqlrc \
-    --tuples-only \
-    --no-align \
-    --field-separator=$'\t' <<'SQL'
+# 逐表行数清单（PostgreSQL）。
+#
+# 主应用与认证库**共用这一个程序**：两库 schema 不同，但「逐表 count(*) 并按
+# schemaname/relname 排序」的形状必须一致——恢复端就是拿这份清单逐字节 cmp 的。
+# \gexec 把 pg_stat_user_tables 展开成一串 SELECT（不在 shell 里拼标识符，
+# 也就不必担心表名转义）。
+emit_pg_table_counts_sql() {
+  cat <<'SQL'
 SELECT format(
   'SELECT %L AS table_name, count(*) AS row_count FROM %I.%I;',
   schemaname || '.' || relname,
@@ -150,21 +160,24 @@ ORDER BY schemaname, relname
 SQL
 }
 
-mysql_counts() {
-  local table_name
-  local row_count
-  local table_list
+postgres_counts() {
+  emit_pg_table_counts_sql | "${compose[@]}" exec -T postgres psql \
+    --username=knowtrace_workflow \
+    --dbname=knowtrace_workflow \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --field-separator=$'\t'
+}
 
-  table_list="$("${compose[@]}" exec -T auth-mysql sh -ec \
-    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --batch --skip-column-names --user=root --database=go_user_system --execute="SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = '\''BASE TABLE'\'' ORDER BY TABLE_NAME"')"
-
-  while IFS= read -r table_name; do
-    [[ -n "$table_name" ]] || continue
-    [[ "$table_name" =~ ^[A-Za-z0-9_]+$ ]] || die "MySQL 表名包含未支持字符: $table_name"
-    row_count="$("${compose[@]}" exec -T auth-mysql sh -ec \
-      "MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" mysql --batch --skip-column-names --user=root --database=go_user_system --execute='SELECT COUNT(*) FROM \`$table_name\`'" </dev/null)"
-    printf '%s\t%s\n' "$table_name" "$row_count"
-  done <<<"$table_list"
+auth_postgres_counts() {
+  emit_pg_table_counts_sql | "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" psql \
+    --username="$AUTH_POSTGRES_USER" \
+    --dbname="$AUTH_POSTGRES_DB" \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --field-separator=$'\t'
 }
 
 if [[ "$QUIESCE_WRITES" == "1" ]]; then
@@ -185,11 +198,24 @@ log "导出 PostgreSQL"
 "${compose[@]}" exec -T postgres pg_restore --list <"$incomplete_dir/postgres.dump" >/dev/null
 postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/postgres-counts.tsv"
 
-log "导出认证 MySQL"
-"${compose[@]}" exec -T auth-mysql sh -ec \
-  'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump --user=root --single-transaction --routines --triggers --events --set-gtid-purged=OFF go_user_system' \
-  >"$incomplete_dir/mysql.sql"
-mysql_counts | sort >"$incomplete_dir/mysql-counts.tsv"
+log "导出认证 PostgreSQL"
+# 与主应用 postgres.dump 同形（--format=custom）：恢复端用同一套 pg_restore 路径。
+# ⚠️ dump 之后**必须**立刻做一次 pg_restore --list：custom 格式是**二进制**，
+#    「非空」不等于「可解析」——被截断但非空的 dump 会一路绿到恢复时才炸
+#    （AGENTS.md §8.1 ① 的 PG 版；主应用侧在上面的 postgres.dump 已有同一道检查）。
+"${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_dump \
+  --username="$AUTH_POSTGRES_USER" \
+  --dbname="$AUTH_POSTGRES_DB" \
+  --format=custom \
+  --no-owner \
+  --no-privileges >"$incomplete_dir/auth-postgres.dump"
+"${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --list <"$incomplete_dir/auth-postgres.dump" >/dev/null \
+  || die "认证库 dump 不可解析（pg_restore --list 失败）——备份未完成，不落归档"
+# --list 只读 TOC，**抓不到尾部截断**（实测尾部砍 128B 时仍 exit 0）。再全量读数据块：
+# --data-only 配 --file=/dev/null —— 解压+校验、不写库、**不连数据库**。
+"${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --data-only --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
+  || die "认证库 dump 数据块不完整（全量读取失败）——备份未完成，不落归档"
+auth_postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/auth-postgres-counts.tsv"
 
 log "生成 Redis RDB 快照"
 redis_key_count="$("${compose[@]}" exec -T auth-redis redis-cli --raw DBSIZE)"
@@ -276,7 +302,7 @@ compose_overlay=$([[ -f compose.production.yaml ]] && printf 'compose.production
 quiesced_writes=$QUIESCE_WRITES
 consistency=$([[ "$QUIESCE_WRITES" == "1" ]] && printf 'application-writes-stopped' || printf 'per-datastore-only')
 postgres_image=postgres:18-alpine
-mysql_image=mysql:8.0
+auth_postgres_image=$AUTH_POSTGRES_IMAGE
 redis_image=redis:7.4-alpine
 contains_secrets=yes
 EOF
