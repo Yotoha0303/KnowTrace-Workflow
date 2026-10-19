@@ -149,7 +149,7 @@ restore_runtime() {
 #
 # 代价（如实）：每次备份对两个库各做一次临时恢复 —— O(数据量) 的恢复时间 + 一份临时库的磁盘。
 # 换来的是「归档落盘时，它已经被真实恢复验证过一次」。任一环节非 0 ⇒ die，不落归档。
-verify_temp_databases=()
+# 记账变量 `verify_temp_databases` 在文件上方声明（与 quiesced 等运行态变量同处）。
 
 new_verify_db_name() {
   local service="$1"
