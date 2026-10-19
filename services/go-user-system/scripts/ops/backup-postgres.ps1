@@ -2,7 +2,11 @@
 param(
     [string]$ProjectDirectory = "",
     [string]$OutputDirectory = "",
-    [string]$ComposeProjectName = ""
+    [string]$ComposeProjectName = "",
+    # 认证库在 compose 里的服务名 / 库名 / 用户名。M4（切库）之前需显式覆盖。
+    [string]$ComposeService = "postgres",
+    [string]$Database = "go_user_system",
+    [string]$DatabaseUser = "go_user_system"
 )
 
 Set-StrictMode -Version Latest
@@ -34,6 +38,12 @@ function Invoke-Compose {
     return $output
 }
 
+foreach ($value in @($ComposeService, $Database, $DatabaseUser)) {
+    if ($value -notmatch '^[A-Za-z0-9_.-]+$') {
+        throw "service/database/user contains unsupported characters: $value"
+    }
+}
+
 Get-Command docker -ErrorAction Stop | Out-Null
 if ([string]::IsNullOrWhiteSpace($ProjectDirectory)) {
     $ProjectDirectory = Join-Path $PSScriptRoot "../.."
@@ -46,23 +56,37 @@ $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
 
 $runningServices = @(Invoke-Compose -Arguments @("ps", "--status", "running", "--services"))
-if ($runningServices -notcontains "mysql") {
-    throw "the Compose mysql service is not running"
+if ($runningServices -notcontains $ComposeService) {
+    throw "the Compose $ComposeService service is not running"
 }
 
 $createdAt = (Get-Date).ToUniversalTime()
 $stamp = $createdAt.ToString("yyyyMMdd-HHmmss")
-$containerPath = "/tmp/go_user_system-$stamp.sql"
-$backupPath = Join-Path $OutputDirectory "go_user_system-$stamp.sql"
+$containerPath = "/tmp/go_user_system-$stamp.dump"
+$backupPath = Join-Path $OutputDirectory "go_user_system-$stamp.dump"
 $manifestPath = "$backupPath.manifest.json"
-$dumpCommand = 'umask 077; MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -uroot --single-transaction --routines --triggers --events --set-gtid-purged=OFF go_user_system > ' + $containerPath
+$dumpCommand = 'umask 077; pg_dump --username=' + $DatabaseUser + ' --dbname=' + $Database +
+    ' --format=custom --no-owner --no-privileges --file=' + $containerPath
 
 try {
-    Invoke-Compose -Arguments @("exec", "-T", "mysql", "sh", "-c", $dumpCommand) | Out-Null
-    $containerHashOutput = @(Invoke-Compose -Arguments @("exec", "-T", "mysql", "sha256sum", $containerPath))
-    $containerHash = (($containerHashOutput -join " ") -split "\s+")[0].ToLowerInvariant()
+    Invoke-Compose -Arguments @("exec", "-T", $ComposeService, "sh", "-c", $dumpCommand) | Out-Null
 
-    Invoke-Compose -Arguments @("cp", "mysql:$containerPath", $backupPath) | Out-Null
+    # 可解析性必须先于 sha256 往返（ADR-0019 §5.4(b)）：
+    # custom 格式是二进制，截断但非空的 dump 能让「容器哈希 == 主机哈希」完全成立。
+    $tocListing = @(Invoke-Compose -Arguments @("exec", "-T", $ComposeService, "pg_restore", "--list", $containerPath))
+    if (@($tocListing | Where-Object { $_ -match '\S' }).Count -eq 0) {
+        throw "pg_restore --list produced no TOC entries: $containerPath"
+    }
+    # --list 只读 TOC，抓不到尾部截断；再全量读数据块（--file=/dev/null：不写库、不连数据库）。
+    Invoke-Compose -Arguments @("exec", "-T", $ComposeService, "pg_restore", "--data-only", "--file=/dev/null", $containerPath) | Out-Null
+
+    $containerHashOutput = @(Invoke-Compose -Arguments @("exec", "-T", $ComposeService, "sha256sum", $containerPath))
+    $containerHash = (($containerHashOutput -join " ") -split "\s+")[0].ToLowerInvariant()
+    if ($containerHash -notmatch '^[0-9a-f]{64}$') {
+        throw "unexpected container checksum output: $containerHash"
+    }
+
+    Invoke-Compose -Arguments @("cp", "$($ComposeService):$containerPath", $backupPath) | Out-Null
     $file = Get-Item -LiteralPath $backupPath
     if ($file.Length -le 0) {
         throw "backup file is empty: $backupPath"
@@ -92,7 +116,9 @@ try {
         schema_version   = 1
         source           = "docker-compose"
         compose_project  = $ComposeProjectName
-        database         = "go_user_system"
+        database         = $Database
+        format           = "pg_dump-custom"
+        service          = $ComposeService
         created_at_utc   = $createdAt.ToString("o")
         application_commit = $commit
         file             = $file.Name
@@ -110,7 +136,7 @@ try {
 }
 finally {
     try {
-        Invoke-Compose -Arguments @("exec", "-T", "mysql", "rm", "-f", $containerPath) | Out-Null
+        Invoke-Compose -Arguments @("exec", "-T", $ComposeService, "rm", "-f", $containerPath) | Out-Null
     }
     catch {
         Write-Warning "failed to remove temporary container backup: $($_.Exception.Message)"
