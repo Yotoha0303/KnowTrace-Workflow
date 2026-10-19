@@ -822,14 +822,14 @@ func TestUpdatePasswordChangesHashAndRevokesRefreshTokensInTransaction(t *testin
 func prepareUserServiceIntegrationDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db := testutil.OpenMySQL(t)
+	db := testutil.OpenTestDB(t)
 	testutil.ResetTables(t, db, "user_roles", "roles", "schema_migrations", "users")
 	testutil.CreateUsersTable(t, db)
 	testutil.CreateRoleAssignmentTables(t, db)
 
 	t.Cleanup(func() {
 		testutil.ResetTables(t, db, "user_roles", "roles", "schema_migrations", "users")
-		testutil.CloseMySQL(t, db)
+		testutil.CloseTestDB(t, db)
 	})
 
 	return db

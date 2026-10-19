@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -20,7 +22,7 @@ import (
 func prepareAuthIntegrationDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db := testutil.OpenMySQL(t)
+	db := testutil.OpenTestDB(t)
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatalf("get sql db failed: %v", err)
@@ -33,9 +35,20 @@ func prepareAuthIntegrationDB(t *testing.T) *gorm.DB {
 
 	t.Cleanup(func() {
 		testutil.ResetTables(t, db, "refresh_tokens", "users")
-		testutil.CloseMySQL(t, db)
+		testutil.CloseTestDB(t, db)
 	})
 	return db
+}
+
+// testTokenHash 造一个 64 位十六进制串，对齐 schema 的 char(64)。
+//
+// 为什么不能随手写 "old-hash"：PG 的 char(n) 读出时**补齐**到 n 位，MySQL 的 CHAR
+// 读出时**截掉**尾部空格——同一份代码在两种库上对 token_hash 的比较结果不同。
+// 真实生产里 token 哈希本来就是 SHA-256 十六进制（恰好 64 位），本测试只是把
+// 这个前提显式化，而不是把判据改松。
+func testTokenHash(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
 }
 
 func createAuthIntegrationUser(t *testing.T, db *gorm.DB, password string) *model.User {
@@ -62,11 +75,17 @@ func TestAuthServiceIntegrationConcurrentRefreshAllowsOneSuccessAndRevokesFamily
 	db := prepareAuthIntegrationDB(t)
 	user := createAuthIntegrationUser(t, db, "password1234")
 	now := time.Now().UTC()
+	// token_hash 在 schema 里是 char(64)（migrations/00003_create_refresh_tokens.sql:8）。
+	// **必须用 64 位十六进制**：PG 的 char(n) 读出时会补齐到 n 位（本机 PG 17.11 实测），
+	// 而 MySQL 的 CHAR 读出时会**截掉**尾部空格——于是 "old-hash" 写进去、读回来是
+	// "old-hash" + 55 个空格，与入参不相等 ⇒ 真实库上 RotateRefreshToken 走 ErrRefreshTokenInvalid，
+	// 两条并发请求**都**失败。那条路径在 MySQL 上绿、在 PG 上红，正是本迁移要暴露的东西。
+	// 单位测全用 fake repo，观测不到这一点。
 	current := &model.RefreshToken{
 		UserID:    user.ID,
 		JTI:       "old-jti",
 		FamilyID:  "family-1",
-		TokenHash: "old-hash",
+		TokenHash: testTokenHash("old"),
 		ExpiresAt: now.Add(time.Hour),
 	}
 	if err := db.Create(current).Error; err != nil {
@@ -91,7 +110,7 @@ func TestAuthServiceIntegrationConcurrentRefreshAllowsOneSuccessAndRevokesFamily
 				current.TokenHash,
 				&model.RefreshToken{
 					JTI:       fmt.Sprintf("next-jti-%d", index),
-					TokenHash: fmt.Sprintf("next-hash-%d", index),
+					TokenHash: testTokenHash(fmt.Sprintf("next-%d", index)),
 					ExpiresAt: now.Add(2 * time.Hour),
 				},
 			)
@@ -135,7 +154,7 @@ func TestUserServiceIntegrationPasswordChangeInvalidatesOldAuthVersionAndRefresh
 		UserID:    user.ID,
 		JTI:       "refresh-jti",
 		FamilyID:  "refresh-family",
-		TokenHash: "refresh-hash",
+		TokenHash: testTokenHash("refresh"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 	if err := db.Create(refreshToken).Error; err != nil {

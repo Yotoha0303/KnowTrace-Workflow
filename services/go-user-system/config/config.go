@@ -18,7 +18,7 @@ import (
 type Config struct {
 	Environment string       `yaml:"environment"`
 	Server      ServerConfig `yaml:"server"`
-	MySQL       MySQLConfig  `yaml:"mysql"`
+	Postgres    PostgresConfig  `yaml:"postgres"`
 	Redis       RedisConfig  `yaml:"redis"`
 	JWT         JWTConfig    `yaml:"jwt"`
 	Auth        AuthConfig   `yaml:"auth"`
@@ -29,7 +29,7 @@ type ServerConfig struct {
 	Port int `yaml:"port"`
 }
 
-type MySQLConfig struct {
+type PostgresConfig struct {
 	Host     string `yaml:"host"`
 	Port     string `yaml:"port"`
 	User     string `yaml:"user"`
@@ -104,21 +104,21 @@ var (
 	ErrUnmarshalConfigFileDataFailed      = errors.New("unmarshal config file data failed")
 	ErrInvalidServerPort                  = errors.New("invalid server port")
 	ErrInvalidExpireHours                 = errors.New("invalid expire hours")
-	ErrInvalidMySQLPort                   = errors.New("invalid mysql port")
-	ErrMySQLDatabaseNotFound              = errors.New("MySQL database name not found")
-	ErrMySQLUserNotFound                  = errors.New("MySQL user not found")
-	ErrMySQLHostNotFound                  = errors.New("MySQL host not found")
+	ErrInvalidPostgresPort                = errors.New("invalid postgres port")
+	ErrPostgresDatabaseNotFound              = errors.New("postgres database name not found")
+	ErrPostgresUserNotFound                  = errors.New("postgres user not found")
+	ErrPostgresHostNotFound                  = errors.New("postgres host not found")
 	ErrInvalidHttpServerReadTimeout       = errors.New("invalid server read time out")
 	ErrInvalidHttpServerWriteTimeout      = errors.New("invalid server write time out")
 	ErrInvalidHttpServerIdleTimeout       = errors.New("invalid server idle time out")
 	ErrInvalidHttpServerReadHeaderTimeout = errors.New("invalid server read header time out")
 	ErrInvalidHttpServerMaxHeaderBytes    = errors.New("invalid server max header bytes")
 	ErrInvalidHttpServerTimeout           = errors.New("invalid http server time out")
-	ErrMySQLMaxOpenConnsFailed            = errors.New("MySQL max open conns failed")
-	ErrMySQLMaxIdleConnsFailed            = errors.New("MySQL mysql max idle conns failed")
-	ErrMySQLInvalidConnMaxIdleTime        = errors.New("invalid mysql conn max idle time")
-	ErrMySQLInvalidConnMaxLifetime        = errors.New("invalid mysql conn max life time")
-	ErrMySQLInvalidPingTimeout            = errors.New("invalid mysql conn ping time out")
+	ErrPostgresMaxOpenConnsFailed            = errors.New("postgres max open conns failed")
+	ErrPostgresMaxIdleConnsFailed            = errors.New("postgres max idle conns failed")
+	ErrPostgresInvalidConnMaxIdleTime        = errors.New("invalid postgres conn max idle time")
+	ErrPostgresInvalidConnMaxLifetime        = errors.New("invalid postgres conn max life time")
+	ErrPostgresInvalidPingTimeout            = errors.New("invalid postgres conn ping time out")
 	ErrRedisAddressEmpty                  = errors.New("redis address is empty")
 	ErrRedisDBInvalid                     = errors.New("redis db is invalid")
 	ErrRedisTimeoutInvalid                = errors.New("redis timeout is invalid")
@@ -131,7 +131,7 @@ var (
 
 func (c Config) Validate() error {
 	server := c.Server
-	mysql := c.MySQL
+	postgresCfg := c.Postgres
 	jwt := c.JWT
 	http := c.HttpServer.Server
 	loginRateLimit := c.Auth.LoginRateLimit
@@ -166,21 +166,21 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid JWT secret: must be at least 32 characters (got %d)", len(jwt.Secret))
 	}
 
-	if mysql.Host == "" {
-		return ErrMySQLHostNotFound
+	if postgresCfg.Host == "" {
+		return ErrPostgresHostNotFound
 	}
 
-	mysqlPort, err := strconv.Atoi(mysql.Port)
-	if err != nil || mysqlPort <= 0 || mysqlPort > 65535 {
-		return ErrInvalidMySQLPort
+	pgPort, err := strconv.Atoi(postgresCfg.Port)
+	if err != nil || pgPort <= 0 || pgPort > 65535 {
+		return ErrInvalidPostgresPort
 	}
 
-	if mysql.Database == "" {
-		return ErrMySQLDatabaseNotFound
+	if postgresCfg.Database == "" {
+		return ErrPostgresDatabaseNotFound
 	}
 
-	if mysql.User == "" {
-		return ErrMySQLUserNotFound
+	if postgresCfg.User == "" {
+		return ErrPostgresUserNotFound
 	}
 
 	if http.ReadTimeOut <= 0 {
@@ -207,24 +207,24 @@ func (c Config) Validate() error {
 		return ErrInvalidHttpServerTimeout
 	}
 
-	if mysql.MaxOpenConns <= 0 {
-		return ErrMySQLMaxOpenConnsFailed
+	if postgresCfg.MaxOpenConns <= 0 {
+		return ErrPostgresMaxOpenConnsFailed
 	}
 
-	if mysql.MaxIdleConns < 0 || mysql.MaxIdleConns > mysql.MaxOpenConns {
-		return ErrMySQLMaxIdleConnsFailed
+	if postgresCfg.MaxIdleConns < 0 || postgresCfg.MaxIdleConns > postgresCfg.MaxOpenConns {
+		return ErrPostgresMaxIdleConnsFailed
 	}
 
-	if mysql.ConnMaxIdleTime <= 0 {
-		return ErrMySQLInvalidConnMaxIdleTime
+	if postgresCfg.ConnMaxIdleTime <= 0 {
+		return ErrPostgresInvalidConnMaxIdleTime
 	}
 
-	if mysql.ConnMaxLifetime <= 0 {
-		return ErrMySQLInvalidConnMaxLifetime
+	if postgresCfg.ConnMaxLifetime <= 0 {
+		return ErrPostgresInvalidConnMaxLifetime
 	}
 
-	if mysql.PingTimeout <= 0 {
-		return ErrMySQLInvalidPingTimeout
+	if postgresCfg.PingTimeout <= 0 {
+		return ErrPostgresInvalidPingTimeout
 	}
 
 	if c.Redis.Enabled {
@@ -400,16 +400,16 @@ func applyEnvOverrides(cfg *Config) error {
 	}
 
 	if v := os.Getenv("DB_HOST"); v != "" {
-		cfg.MySQL.Host = v
+		cfg.Postgres.Host = v
 	}
 	if v := os.Getenv("DB_PORT"); v != "" {
-		cfg.MySQL.Port = v
+		cfg.Postgres.Port = v
 	}
 	if v := os.Getenv("DB_USER"); v != "" {
-		cfg.MySQL.User = v
+		cfg.Postgres.User = v
 	}
 	if v := os.Getenv("DB_NAME"); v != "" {
-		cfg.MySQL.Database = v
+		cfg.Postgres.Database = v
 	}
 
 	if v := os.Getenv("REDIS_ENABLED"); v != "" {
