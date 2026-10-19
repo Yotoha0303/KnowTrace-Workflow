@@ -75,6 +75,33 @@ list_rc() { if pg_restore_in_container --list <"$1" >/dev/null 2>&1; then echo 0
 data_only_rc() { if pg_restore_in_container --data-only --file=/dev/null <"$1" >/dev/null 2>&1; then echo 0; else echo 1; fi; }
 full_rc() { if pg_restore_in_container --file=/dev/null <"$1" >/dev/null 2>&1; then echo 0; else echo 1; fi; }
 
+# 真实恢复验证（对应 scripts/linux/backup-all.sh 的 verify_dump_by_real_restore）：
+#   在**真实库**里恢复 + 逐表计数与正向阶段产出的 main-counts.tsv 逐字节 cmp。
+# 返回 0 = 验证通过（恢复成功且计数一致），非 0 = 不通过。
+#
+# ⚠️ 这是**唯一**能证明「数据区损坏」的判据：
+#    CI run 39258948661（PG 18）实测——数据区翻 1 字节后
+#    `--list`=0 / `--data-only --file=/dev/null`=0 / 全量 `--file=/dev/null`=**0**；
+#    而同一注入在 PG 17.11 上是 1。⇒ 那三条是「快速失败前置」，不是完整性证据。
+real_restore_verify_rc() {
+  local dump="$1" log_name="$2"
+  local db="knowtrace_ci_verify_negative" rc=0
+  create_database "$db"
+  if pg_restore_in_container --dbname="$db" --no-owner --no-privileges \
+      --exit-on-error <"$dump" >"$WORKDIR/$log_name.log" 2>&1; then
+    table_counts "$db" >"$WORKDIR/$log_name.counts.tsv"
+    if cmp -s "$WORKDIR/main-counts.tsv" "$WORKDIR/$log_name.counts.tsv"; then
+      rc=0
+    else
+      rc=1
+    fi
+  else
+    rc=$?
+  fi
+  run_psql postgres --command="DROP DATABASE IF EXISTS \"$db\";" >/dev/null
+  echo "$rc"
+}
+
 # 逐字对应 backup-all.sh 的 custom_archive_tail_ok：
 #   [[ "$(tail -c 5 "$dump_path" | od -An -tx1 | tr -d ' \n')" == "0000000000" ]]
 # 返回 0 = 通过（末 5 字节全 NUL），1 = 不通过。实际观测值打到 stderr，留在 CI 日志里。
@@ -387,20 +414,30 @@ negative() {
   observe "N2c/truncate full exit" "$truncate_full"
 
   echo
-  echo "=== 负向 3：数据区翻 1 字节 -> 全量 --file=/dev/null 必须失败 ==="
+  echo "=== 负向 3：数据区翻 1 字节 -> **真实恢复验证**必须失败 ==="
   # 注入点：**压缩后的** base.dump 的 9/10 处。理由（为什么不按 needle 精确定位）：
   #   custom 归档的 TOC 在文件开头、数据块在其后；TOC 只有几 KB，而本 dump 的 schema
   #   与数据块占绝大部分，9/10 处必然落在某个**压缩数据块**内。
-  #   压缩块翻 1 字节 -> zlib 解压失败 -> 全量 `--file=/dev/null` 非零退出（PG 17.11 实测）。
   #   ⚠️ needle 模式只对 `-Z0` 的 dump 可用，而 `-Z0` 没有压缩、**没有完整性校验**，
-  #      在那种 dump 上翻数据字节**不会**让全量读取失败 —— 那会把用例变成一个假的期望。
+  #      在那种 dump 上翻数据字节**不会**让任何读取路径失败 —— 那会把用例变成一个假的期望。
   #   注入与偏移都是**确定性**的（固定文件 + 固定比例），故结果可稳定复现。
+  #
+  # 期望值为什么改成「真实恢复」而不是「全量 --file=/dev/null」（2026-10-19）：
+  #   CI run 39258948661（PG 18）实测 `full=0` —— 全量 `--file=/dev/null` **不报**数据区损坏
+  #   （同一注入在 PG 17.11 上是 1）。把这条件当判据，等于让一份坏归档在 PG 18 上放行。
+  #   真正能拦住它的是「把数据灌进一个库，再逐表 count(*) 比对」—— 与
+  #   `scripts/linux/backup-all.sh` 的 verify_dump_by_real_restore 同一口径。
+  #   `full` 与另外两条结构路径**只观察**（打印在 DOORS 行里，不计失败）。
   local data_flip_file="$WORKDIR/neg-dataflip.dump"
   "$PYTHON_BIN" "$SCRIPT_DIR/mutate.py" flip-fraction 9/10 "$WORKDIR/base.dump" "$data_flip_file"
   check "N3/injection produced a mutated dump of same size" "yes" \
     "$([[ "$(stat -c %s "$data_flip_file")" -eq "$(stat -c %s "$WORKDIR/base.dump")" ]] && echo yes || echo no)"
-  check "N3/full --file=/dev/null rejects data flip" "1" "$(full_rc "$data_flip_file")"
+  check "N3/real restore verification rejects data flip" "1" \
+    "$(real_restore_verify_rc "$data_flip_file" "neg-dataflip-restore")"
   report_all_doors "N3-data-flip" "$data_flip_file"
+  observe "N3-note/reason" "PG 18 上全量 --file=/dev/null 不报数据区损坏（见 run-criteria.sh 注释），故必须靠真实恢复"
+  echo "--- 数据区翻转后真实恢复日志（末尾 10 行）---"
+  tail -n 10 "$WORKDIR/neg-dataflip-restore.log" || true
 
   echo
   echo "=== 负向 4：空库 dump -> *-counts.tsv 为空 -> 备份端必须拒绝 ==="
