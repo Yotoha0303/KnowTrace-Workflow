@@ -288,8 +288,10 @@ func assertTestDatabase(t testing.TB, db *gorm.DB) {
 // acquireIntegrationLock 用 PG 的 advisory lock 替代 MySQL 的 GET_LOCK。
 //
 // ⚠️ 两者的**返回值语义不同**（这正是 ADR §3 点名的那条）：
-//   MySQL `GET_LOCK(name, 30)` 返回 1（拿到）/ 0（超时）/ NULL（出错）
-//   PG    `pg_try_advisory_lock(key)` 返回 **boolean**，且**不等待**
+//
+//	MySQL `GET_LOCK(name, 30)` 返回 1（拿到）/ 0（超时）/ NULL（出错）
+//	PG    `pg_try_advisory_lock(key)` 返回 **boolean**，且**不等待**
+//
 // ⇒ 不能照抄 `if lockResult != 1`（那样 PG 下永远为真，判据死掉）。
 // 这里用 `pg_try_advisory_lock` + 显式重试，保留原 SQL 的「最多等 30 秒」语义。
 func acquireIntegrationLock(t testing.TB, db *gorm.DB) {

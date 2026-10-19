@@ -16,13 +16,13 @@ import (
 )
 
 type Config struct {
-	Environment string       `yaml:"environment"`
-	Server      ServerConfig `yaml:"server"`
-	Postgres    PostgresConfig  `yaml:"postgres"`
-	Redis       RedisConfig  `yaml:"redis"`
-	JWT         JWTConfig    `yaml:"jwt"`
-	Auth        AuthConfig   `yaml:"auth"`
-	HttpServer  HttpServer   `yaml:"http"`
+	Environment string         `yaml:"environment"`
+	Server      ServerConfig   `yaml:"server"`
+	Postgres    PostgresConfig `yaml:"postgres"`
+	Redis       RedisConfig    `yaml:"redis"`
+	JWT         JWTConfig      `yaml:"jwt"`
+	Auth        AuthConfig     `yaml:"auth"`
+	HttpServer  HttpServer     `yaml:"http"`
 }
 
 type ServerConfig struct {
@@ -105,20 +105,20 @@ var (
 	ErrInvalidServerPort                  = errors.New("invalid server port")
 	ErrInvalidExpireHours                 = errors.New("invalid expire hours")
 	ErrInvalidPostgresPort                = errors.New("invalid postgres port")
-	ErrPostgresDatabaseNotFound              = errors.New("postgres database name not found")
-	ErrPostgresUserNotFound                  = errors.New("postgres user not found")
-	ErrPostgresHostNotFound                  = errors.New("postgres host not found")
+	ErrPostgresDatabaseNotFound           = errors.New("postgres database name not found")
+	ErrPostgresUserNotFound               = errors.New("postgres user not found")
+	ErrPostgresHostNotFound               = errors.New("postgres host not found")
 	ErrInvalidHttpServerReadTimeout       = errors.New("invalid server read time out")
 	ErrInvalidHttpServerWriteTimeout      = errors.New("invalid server write time out")
 	ErrInvalidHttpServerIdleTimeout       = errors.New("invalid server idle time out")
 	ErrInvalidHttpServerReadHeaderTimeout = errors.New("invalid server read header time out")
 	ErrInvalidHttpServerMaxHeaderBytes    = errors.New("invalid server max header bytes")
 	ErrInvalidHttpServerTimeout           = errors.New("invalid http server time out")
-	ErrPostgresMaxOpenConnsFailed            = errors.New("postgres max open conns failed")
-	ErrPostgresMaxIdleConnsFailed            = errors.New("postgres max idle conns failed")
-	ErrPostgresInvalidConnMaxIdleTime        = errors.New("invalid postgres conn max idle time")
-	ErrPostgresInvalidConnMaxLifetime        = errors.New("invalid postgres conn max life time")
-	ErrPostgresInvalidPingTimeout            = errors.New("invalid postgres conn ping time out")
+	ErrPostgresMaxOpenConnsFailed         = errors.New("postgres max open conns failed")
+	ErrPostgresMaxIdleConnsFailed         = errors.New("postgres max idle conns failed")
+	ErrPostgresInvalidConnMaxIdleTime     = errors.New("invalid postgres conn max idle time")
+	ErrPostgresInvalidConnMaxLifetime     = errors.New("invalid postgres conn max life time")
+	ErrPostgresInvalidPingTimeout         = errors.New("invalid postgres conn ping time out")
 	ErrRedisAddressEmpty                  = errors.New("redis address is empty")
 	ErrRedisDBInvalid                     = errors.New("redis db is invalid")
 	ErrRedisTimeoutInvalid                = errors.New("redis timeout is invalid")
