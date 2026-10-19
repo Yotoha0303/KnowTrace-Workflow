@@ -179,6 +179,18 @@ else {
             $result.Output | ForEach-Object { Write-Output ("     | {0}" -f $_) }
             $failures.Add($script)
         }
+
+        # UTF-8 BOM 会**通过 bash -n**：内核只认文件头的 `#!` 两个字节，
+        # 前面多了 EF BB BF 就不再是有效的解释器路径，在 Linux 上表现为
+        # `./x.sh: cannot execute: required file not found` —— 而本机（Git Bash）
+        # 与 `bash -n` 都不会报错。2026-10-19 实测踩到：run-criteria.sh 带 BOM，
+        # bash -n 与自检全绿，只有真正 `./run-criteria.sh` 才炸。
+        # 判据：受检的 .sh 前 3 字节不得是 EF BB BF。
+        $head = [System.IO.File]::ReadAllBytes($script)
+        if ($head.Length -ge 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) {
+            Write-Output ("FAIL {0} (带 UTF-8 BOM：Linux 上 shebang 失效，bash -n 看不见)" -f $script)
+            $failures.Add($script)
+        }
         $checked += 1
     }
 }

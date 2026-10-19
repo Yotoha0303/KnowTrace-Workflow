@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # PG 18 上的 dump 判据 —— M5 三跳链 03 环阻断项 G-6 的第二层（**证据**，不是跳线）。
 #
 # 为什么需要这个 job：
