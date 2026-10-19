@@ -107,8 +107,9 @@ jobs:
         working-directory: services/go-user-system
 
     # 2026-10-17（ISSUE-S3-015 / ADR-0019 §5.2 ①）：本 job 原先**不配 TEST_DATABASE_DSN**，
-    # 集成测试全部 t.Skipf（internal/testutil/mysql.go 的 OpenMySQL 在 DSN 为空时 skip）
+    # 集成测试全部 t.Skipf（internal/testutil 的 OpenTestDB 在 DSN 为空时 skip）
     # ——「CI 全绿」里没有任何一条来自真实数据库，ADR-0019 §5.6 的每条负向判据都没有载体。现在补上了。
+    # 2026-10-19（M3）：service 与 DSN 由 MySQL 换成 PostgreSQL，与主应用同方言（ADR-0019）。
     #
     # 本 job 有**两道**门，职责不同，别混着引用：
     #
@@ -121,33 +122,28 @@ jobs:
     #   **不得**把它的绿色引用为「集成测真的连过库」的证据。
     #
     # 第二道（服务端见证，scripts/check-go-integration-server-witness.mjs）——**这一道才是证据**：
-    #   测试前后各一步，用 root 读 MySQL 自己的 `general_log`，数「以测试账户连上测试库、
-    #   并在该连接上执行过 OpenMySQL 启动序列（GET_LOCK / DATABASE() / VERSION()）的连接数」。
-    #   测试二进制够不着这个账本（本机实测：测试账户读 performance_schema 被拒，ERROR 1142）。
-    #   ⚠️ 它证明的是「有过 8 条真实连接」，**不是**「是哪 8 条 Go 用例连的」——服务端没有测试名。
+    #   测试前后各一步，读 PostgreSQL 自己的 `pg_stat_database.sessions`（PG 14+ 的累计会话数），
+    #   判**差值** >= 8。该计数只有「真的向该库建立连接」才涨，测试进程没有任何 SQL 能把它加一。
+    #   ⚠️ 它证明的是「测试期间有过 8 次真实连接」，**不是**「是哪 8 条 Go 用例连的」——服务端没有测试名。
     #
-    # ⚠️ 这道门**当前只覆盖 MySQL 方言**：testutil 硬绑 gorm.io/driver/mysql（PG 版属 M4）。
-    #    它**不覆盖** PG 迁移的方言残留（SET FOREIGN_KEY_CHECKS / SELECT DATABASE() / GET_LOCK）。
-    #    **「集成测绿了」≠「PG 迁移可验」**——别把这道门的绿色当成迁移的准入证据。
-    # ⚠️ 镜像照抄下面 e2e job 的 mysql:8.0（同一份配置，不另起一套）；
-    #    MySQL 版本 pin（8.0 vs 8.4）的收口与 #26（ISSUE-S3-016）同批处理。
+    # ⚠️ 健康检查**刻意不带 `-d go_user_system_test`**：探的是维护库。`pg_isready` 本身不建会话
+    #    （本机 PG 17.11 实测），但把探活指向被测库会让人误以为「探活也算连接计数」。
     # ⚠️ 库名必须是 go_user_system_test：testutil 的 assertTestDatabase 拒绝库名不含
-    #    "test" 的库（internal/testutil/mysql.go），照抄 e2e 的 go_user_system 会直接 t.Fatalf。
+    #    "test" 的库（internal/testutil/postgres.go），照抄 e2e 的 go_user_system 会直接 t.Fatalf。
     services:
-      mysql:
-        image: mysql:8.0
+      postgres:
+        image: postgres:18-alpine
         env:
-          MYSQL_ROOT_PASSWORD: knowtrace-root
-          MYSQL_DATABASE: go_user_system_test
-          MYSQL_USER: go_user_system
-          MYSQL_PASSWORD: knowtrace
+          POSTGRES_DB: go_user_system_test
+          POSTGRES_USER: go_user_system
+          POSTGRES_PASSWORD: knowtrace
         ports:
-          - 3306:3306
+          - 5432:5432
         options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
+          --health-cmd "pg_isready -U go_user_system -d postgres"
           --health-interval 5s
-          --health-timeout 5s
-          --health-retries 30
+          --health-timeout 3s
+          --health-retries 20
 
     steps:
       - name: Check out repository
@@ -159,26 +155,27 @@ jobs:
           go-version-file: services/go-user-system/go.mod
           cache-dependency-path: services/go-user-system/go.sum
 
-      # 服务端见证（第一半）：**在测试之前**清空并打开 MySQL 自己的 general_log。
+      # 服务端见证（第一半）：**在测试之前**记下 PostgreSQL 的 sessions 基线。
       #
       # 为什么需要这一步：下面那道日志门只能核对「测试进程自己说的话」，一行 t.Log 即可伪造。
-      # 真证据必须取自测试进程够不着的地方 —— MySQL 的 general_log 表。
-      # ⚠️ 顺序不可换：先关日志 → TRUNCATE → 再打开；否则清理语句自己会被记进去。
-      # ⚠️ `log_output` 必须含 TABLE（MySQL 默认是 FILE）；脚本会**回读**实际值，不信 SET 成功。
-      # 口令走 MYSQL_PWD 而不是 `-p`：与本 job 下面 e2e 的查库步同形，不出现在命令行里。
-      - name: Prepare the MySQL server-side witness log
+      # 真证据必须取自测试进程够不着的地方 —— PostgreSQL 的 pg_stat_database.sessions。
+      # ⚠️ 判的是**差值**，不是绝对值：sessions 是累计值，绝对值与本轮测试无关。
+      # ⚠️ 脚本自己连的是维护库 postgres（不是被测库），否则读数连接本身会给被测库 +1。
+      # 口令走 PGPASSWORD 而不是 URL / 命令行，不出现在进程列表里。
+      # ⚠️ 基线文件写在 workspace 根，与下面判定步共用同一个默认路径。
+      - name: Capture the PostgreSQL server-side witness baseline
         working-directory: ${{ github.workspace }}
         env:
-          MYSQL_PWD: knowtrace-root
+          PGPASSWORD: knowtrace
         run: >-
           node scripts/check-go-integration-server-witness.mjs --prepare
-          --database go_user_system_test --user go_user_system
+          --database go_user_system_test --admin-user go_user_system --port 5432
 
       # 与 Makefile 的 check 目标、CONTRIBUTING 的「提交前验证」保持一致。
       # 这个 job 之前缺失，导致认证服务的 26 个测试文件不在任何自动化门里。
       #
-      # DSN 形态与 pkg/database/db.go:47-53 的构造方式一致（gorm.io/driver/mysql 的
-      # mysql.Open 直接吃这个串）；库名含 "test" 是硬要求——见上面 service 块。
+      # DSN 形态与 pkg/database/db.go 的 buildDSN 一致（gorm.io/driver/postgres 直接吃 PG URL）；
+      # `timezone=UTC` 与 db.go 同样刻意钉住；库名含 "test" 是硬要求——见上面 service 块。
       #
       # `-count=1` 不可省：`go test` 会缓存**成功**的包，重跑时直接回放上次结果
       # （连测试函数体都不执行）。同一个 SHA 上重跑 CI 时，断言步会读到上一次的 PASS。
@@ -186,13 +183,13 @@ jobs:
       # 将来有人去掉这个参数时的纵深防御。
       #
       # `-json` 而不是 `-v`：断言步按事件（Action）计数，不按 `--- PASS:` 文本计数。
-      # 文本判据抓不到缩进 4 空格的子测试 SKIP，也分不清真 MySQL 与 fake driver。
+      # 文本判据抓不到缩进 4 空格的子测试 SKIP，也分不清真 PostgreSQL 与 fake driver。
       #
       # `set -o pipefail` 不可省：GitHub Actions 的 bash 默认带 `-e` 但**不带 pipefail**，
       # `go test … | tee` 会把测试失败的退出码吞成 tee 的 0。
       - name: Run Go tests
         env:
-          TEST_DATABASE_DSN: "go_user_system:knowtrace@tcp(127.0.0.1:3306)/go_user_system_test?charset=utf8mb4&parseTime=True&loc=Local"
+          TEST_DATABASE_DSN: "postgres://go_user_system:knowtrace@127.0.0.1:5432/go_user_system_test?sslmode=disable&timezone=UTC"
         run: |
           set -o pipefail
           go test ./... -count=1 -json 2>&1 | tee /tmp/go-test.jsonl
@@ -210,8 +207,8 @@ jobs:
       #   本步防的是**误配 / 疏忽**：DSN 没配、用例被无意跳过、fake driver 被误接上。
       #
       # 判据（四条，缺一不可；实现见 scripts/check-go-integration-gate.mjs）：
-      #   ① 日志里必须有 `REAL_DB_FINGERPRINT database=… version=…` —— 它由 testutil.OpenMySQL
-      #      向数据库要 DATABASE()/VERSION() 拼出（internal/testutil/mysql.go）。
+      #   ① 日志里必须有 `REAL_DB_FINGERPRINT database=… version=…` —— 它由 testutil.OpenTestDB
+      #      向数据库要 current_database()/server_version 拼出（internal/testutil/postgres.go）。
       #   ② 任何被 SKIP 的集成用例（名字含 Integration，含子测试——JSON 里没有缩进可言）都失败。
       #   ③ **带自有指纹**的顶层集成用例 PASS **>= 8**。口径是指纹事件被 go test 归因（事件的 Test
       #      字段）到哪条测试，**不是**「名字里有没有 Integration」：后者会把走 fake driver、
@@ -230,30 +227,29 @@ jobs:
       # `working-directory` 必须显式覆盖：本 job 的 defaults 是 services/go-user-system，
       # 而脚本在仓库根的 scripts/ 下。不覆盖会找不到脚本（node 报错退出，门会红，
       # 但红的原因与「集成测没跑」无关——那是门自己坏了）。
-      - name: Assert the MySQL integration tests actually ran (log tripwire)
+      - name: Assert the PostgreSQL integration tests actually ran (log tripwire)
         if: always()
         working-directory: ${{ github.workspace }}
         run: node scripts/check-go-integration-gate.mjs /tmp/go-test.jsonl
 
-      # 服务端见证（第二半，**这一道才是证据**）：用 root 读 MySQL 的 general_log，
-      # 数「以 go_user_system 连上 go_user_system_test、并在该连接上执行过 OpenMySQL 启动序列
-      # （GET_LOCK / DATABASE() / VERSION()）的连接数」，要求 >= 8。
+      # 服务端见证（第二半，**这一道才是证据**）：读 PostgreSQL 的 pg_stat_database.sessions，
+      # 判「测试期间该库新增了多少次会话」，要求 >= 8。
       #
-      # 为什么测试二进制伪造不了：测试用的是 app 账户，本机实测它读
-      # performance_schema.events_statements_summary_by_digest 被拒（ERROR 1142），
-      # 对 mysql.general_log 同样读写不得。唯一能写的 root 连接不满足
-      # `user_host` 以被测账户开头的过滤条件。
-      # ⚠️ 它证明「有过 8 条真实连接」，**不证明**「是哪 8 条 Go 用例连的」——服务端没有测试名。
-      # ⚠️ `if: always()` 同理：`go test` 红了也要看服务端到底记了几条，那是第一手诊断信息。
-      #    此时本步会因连接数不足而红——**那是上游失败的下游结果**，脚本输出里已写明。
-      - name: Assert the MySQL server saw the integration connections
+      # 为什么测试二进制伪造不了：sessions 没有写入接口——没有任何 SQL 能让它变大，
+      # 只能真的向该库**建立连接**（本机 PG 17.11 实测：连 2 次 → +2）。它也不能被清零重来：
+      # 本门同时比对 stats_reset，两次读数之间被重置即判不通过（重置需超级用户）。
+      # ⚠️ 它证明「测试期间有过 8 次真实连接」，**不证明**「是哪 8 条 Go 用例连的」——服务端没有测试名。
+      # ⚠️ `if: always()` 同理：`go test` 红了也要看服务端到底记了几次，那是第一手诊断信息。
+      #    此时本步会因差值不足而红——**那是上游失败的下游结果**，脚本输出里已写明。
+      - name: Assert the PostgreSQL server saw the integration connections
         if: always()
         working-directory: ${{ github.workspace }}
         env:
-          MYSQL_PWD: knowtrace-root
+          PGPASSWORD: knowtrace
         run: >-
           node scripts/check-go-integration-server-witness.mjs
-          --database go_user_system_test --user go_user_system --min-connections 8
+          --database go_user_system_test --admin-user go_user_system
+          --port 5432 --min-new-sessions 8
 
       # 兜底：上面两步的输出只活在 job 里；失败时把原始 JSON 日志留成工件，
       # 否则「门红了但看不出为什么」只能靠重跑。
@@ -339,24 +335,24 @@ jobs:
       # 后果比 KT-GAP-33 修掉的那个 lint 假门更宽 ——
       # 「CI 全 success」当时并不等于「登录链路在门内验过」。
       #
-      # 为什么是 mysql 而不是把 compose 整栈拉起来：本 job 只需要
+      # 为什么不起 compose 整栈：本 job 只需要
       # 「一个能登录的账号」。认证服务是一个 Go 二进制（可以在 step 里直接起），
       # 不必为此引入 docker compose 的重栈。
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: knowtrace-root
-          MYSQL_DATABASE: go_user_system
-          MYSQL_USER: go_user_system
-          MYSQL_PASSWORD: knowtrace
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 30
-
+      auth-postgres:
+          # 2026-10-19（ADR-0019 M2/M3）：认证服务已改走 pgx，MySQL service 连不上。
+          # 改用它自己的 PG 实例（与 go job 同形）；主应用的 postgres 在另一个 service 上。
+          image: postgres:18-alpine
+          env:
+            POSTGRES_DB: go_user_system
+            POSTGRES_USER: go_user_system
+            POSTGRES_PASSWORD: knowtrace
+          ports:
+            - 5433:5432
+          options: >-
+            --health-cmd "pg_isready -U go_user_system -d go_user_system"
+            --health-interval 5s
+            --health-timeout 5s
+            --health-retries 30
     env:
       # 与 quality job 同一套空库。Playwright 的 webServer 会起生产构建。
       DATABASE_URL: postgres://knowtrace:knowtrace@localhost:5432/knowtrace
@@ -399,9 +395,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         run: go run ./cmd migrate up
@@ -410,9 +406,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         # job 级 env 会被所有 step 继承，所以这里直接读 KNOWTRACE_ADMIN_*，
@@ -451,9 +447,9 @@ jobs:
           APP_ENV: development
           APP_PORT: "8082"
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
           REGISTRATION_ENABLED: "false"
@@ -487,10 +483,10 @@ jobs:
         # 改为直接查库断言「账号存在 + 已赋 admin 角色」：
         # 这不消耗限流预算，而且比登录更直接地证明「种子建对了」。
         env:
-          MYSQL_PWD: knowtrace-root
+          PGPASSWORD: knowtrace
         run: |
-          row="$(mysql -h 127.0.0.1 -P 3306 -u root -N -B go_user_system -e "
-            SELECT u.username, GROUP_CONCAT(r.code ORDER BY r.code)
+          row="$(psql -h 127.0.0.1 -p 5433 -U go_user_system -d go_user_system -tA -c "
+            SELECT u.username, string_agg(r.code, ',' ORDER BY r.code)
             FROM users u
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r ON r.id = ur.role_id
@@ -500,7 +496,10 @@ jobs:
             echo "库里没有账号 ${KNOWTRACE_ADMIN_USERNAME} —— 种子没建出来"
             exit 1
           fi
-          roles="${row#*$'	'}"
+          # `psql -tA` 的字段分隔符是 `|`（不是 TAB —— 那是 `mysql -N -B` 的行为）。
+          # 原写法按 TAB 切，在 psql 下切不掉前缀 ⇒ roles 拿到整行
+          # `CiAdmin|admin,user`，",admin,user," 里找不到 ",admin," ⇒ 误报。
+          roles="${row#*|}"
           if [[ ",$roles," != *",admin,"* ]]; then
             echo "账号 ${KNOWTRACE_ADMIN_USERNAME} 存在，但没有 admin 角色（实际：${roles}）"
             exit 1

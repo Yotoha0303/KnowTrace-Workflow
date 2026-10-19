@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -43,24 +43,32 @@ func (testutilSQLConn) ExecContext(ctx context.Context, query string, args []dri
 	return driver.RowsAffected(1), nil
 }
 
+// QueryContext 按查询文本分派，模拟 postgres.go 真实启动序列里的那几问。
+//
+// ⚠️ 这里**刻意不实现**一个「永远答得像真 PG」的 fake：兜底分支返回 version="0"，
+// 好让 TestBuildRealDBFingerprintRejectsFakeConnection 能证明「fake 连接不产指纹」，
+// 而不是让 fake 恰好把指纹蒙出来。分派用的是 PG 的语句（current_database /
+// server_version / pg_try_advisory_lock），不是 MySQL 的 DATABASE()/VERSION()/GET_LOCK。
 func (testutilSQLConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	upperQuery := strings.ToUpper(query)
-	if strings.Contains(upperQuery, "DATABASE()") {
+	lowerQuery := strings.ToLower(query)
+	switch {
+	case strings.Contains(lowerQuery, "current_database()"):
 		return &testutilSQLRows{
-			columns: []string{"database"},
-			values:  []driver.Value{"go_user_test"},
+			columns: []string{"current_database"},
+			values:  []driver.Value{"go_user_system_test"},
+		}, nil
+	case strings.Contains(lowerQuery, "pg_try_advisory_lock"):
+		return &testutilSQLRows{
+			columns: []string{"pg_try_advisory_lock"},
+			values:  []driver.Value{true},
+		}, nil
+	default:
+		// current_setting('server_version') 落在这里：fake 答 "0"，与真 PG 的 "17.11" 不同形。
+		return &testutilSQLRows{
+			columns: []string{"value"},
+			values:  []driver.Value{"0"},
 		}, nil
 	}
-	if strings.Contains(upperQuery, "GET_LOCK") {
-		return &testutilSQLRows{
-			columns: []string{"lock_result"},
-			values:  []driver.Value{int64(1)},
-		}, nil
-	}
-	return &testutilSQLRows{
-		columns: []string{"value"},
-		values:  []driver.Value{int64(0)},
-	}, nil
 }
 
 type testutilSQLTx struct{}
@@ -102,6 +110,11 @@ func (r *testutilSQLRows) Next(dest []driver.Value) error {
 	return nil
 }
 
+// openTestutilGormDB 用自注册的 fake driver 造一个 *gorm.DB。
+//
+// 方言必须是 **postgres**，不能用 mysql 方言代替：gorm 的 clause builder 挂了方言，
+// 换方言后 fake 用例照样 PASS，但它们的 PASS 就不再说明「PG 方言下这条路径能走通」——
+// 那正是 M3 要验的东西。postgres.New 在给了 Conn 时**不做版本探测**、**不连接**。
 func openTestutilGormDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -114,9 +127,8 @@ func openTestutilGormDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sql db failed: %v", err)
 	}
 
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		Conn:                      sqlDB,
-		SkipInitializeWithVersion: true,
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
 	}), &gorm.Config{DisableAutomaticPing: true})
 	if err != nil {
 		t.Fatalf("open gorm db failed: %v", err)
@@ -124,34 +136,35 @@ func openTestutilGormDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestOpenMySQLSkipsWhenDSNIsMissing(t *testing.T) {
+func TestOpenTestDBSkipsWhenDSNIsMissing(t *testing.T) {
 	t.Setenv(TestDatabaseDSNEnv, "")
 
-	OpenMySQL(t)
+	// 没有 DSN ⇒ OpenTestDB 走 t.Skipf。本用例的 PASS 形态就是 SKIP。
+	OpenTestDB(t)
 }
 
-func TestOpenMySQLInitializesTestDatabase(t *testing.T) {
-	oldOpenMySQLDB := openMySQLDB
+func TestOpenTestDBInitializesTestDatabase(t *testing.T) {
+	oldOpenTestDB := openPostgresDB
 	t.Cleanup(func() {
-		openMySQLDB = oldOpenMySQLDB
+		openPostgresDB = oldOpenTestDB
 	})
 
 	var gotDSN string
-	openMySQLDB = func(dsn string) (*gorm.DB, error) {
+	openPostgresDB = func(dsn string) (*gorm.DB, error) {
 		gotDSN = dsn
 		return openTestutilGormDB(t), nil
 	}
 
 	t.Setenv(TestDatabaseDSNEnv, "fake-test-dsn")
 
-	db := OpenMySQL(t)
+	db := OpenTestDB(t)
 	if gotDSN != "fake-test-dsn" {
 		t.Fatalf("expected dsn fake-test-dsn, got %s", gotDSN)
 	}
-	CloseMySQL(t, db)
+	CloseTestDB(t, db)
 }
 
-// skipRecorder 记录 OpenMySQL 是否调用了 Skip/Skipf，但**不真的 skip**。
+// skipRecorder 记录 OpenTestDB 是否调用了 Skip/Skipf，但**不真的 skip**。
 //
 // 为什么需要它：真实的 `t.Skip()` 会让调用方用例变成 SKIP，而 SKIP 在 CI 里是绿的
 // （`go test` 退出码 0）。也就是说，「DSN 配了却仍然 skip」这件事，
@@ -174,18 +187,18 @@ func (r *skipRecorder) SkipNow() {
 	r.reason = "SkipNow"
 }
 
-// TestOpenMySQLDoesNotSkipWhenDSNIsSet 是 CI 集成测门的反向守卫：
-// TEST_DATABASE_DSN 已配时，OpenMySQL 必须连接，不得走 skip 分支。
+// TestOpenTestDBDoesNotSkipWhenDSNIsSet 是 CI 集成测门的反向守卫：
+// TEST_DATABASE_DSN 已配时，OpenTestDB 必须连接，不得走 skip 分支。
 // 若有人把 skip 条件改错（例如改成只看数据库名、或漏掉 TrimSpace 后的空判断），
 // 本用例会红——而集成测本身会静默 SKIP、CI 照旧全绿。
-func TestOpenMySQLDoesNotSkipWhenDSNIsSet(t *testing.T) {
-	oldOpenMySQLDB := openMySQLDB
+func TestOpenTestDBDoesNotSkipWhenDSNIsSet(t *testing.T) {
+	oldOpenTestDB := openPostgresDB
 	t.Cleanup(func() {
-		openMySQLDB = oldOpenMySQLDB
+		openPostgresDB = oldOpenTestDB
 	})
 
 	var opened bool
-	openMySQLDB = func(string) (*gorm.DB, error) {
+	openPostgresDB = func(string) (*gorm.DB, error) {
 		opened = true
 		return openTestutilGormDB(t), nil
 	}
@@ -193,33 +206,39 @@ func TestOpenMySQLDoesNotSkipWhenDSNIsSet(t *testing.T) {
 	t.Setenv(TestDatabaseDSNEnv, "fake-test-dsn")
 
 	recorder := &skipRecorder{TB: t}
-	db := OpenMySQL(recorder)
+	db := OpenTestDB(recorder)
 	t.Cleanup(func() {
-		CloseMySQL(t, db)
+		CloseTestDB(t, db)
 	})
 
 	if recorder.reason != "" {
-		t.Fatalf("TEST_DATABASE_DSN 已配置，OpenMySQL 却 skip 了：%s", recorder.reason)
+		t.Fatalf("TEST_DATABASE_DSN 已配置，OpenTestDB 却 skip 了：%s", recorder.reason)
 	}
 	if !opened {
-		t.Fatal("TEST_DATABASE_DSN 已配置，OpenMySQL 却没有尝试连接")
+		t.Fatal("TEST_DATABASE_DSN 已配置，OpenTestDB 却没有尝试连接")
 	}
 }
 
-func TestDefaultOpenMySQLDBReturnsConnectionError(t *testing.T) {
-	_, err := openMySQLDB("root:secret@tcp(127.0.0.1:1)/go_user_test?timeout=1ms")
+// TestDefaultOpenPostgresDBReturnsConnectionError 断言**默认**的 openPostgresDB
+// 对不可达的 PG 返回错误（而不是静默成功）。
+//
+// DSN 刻意用 PG 的 URL 形态并指向 127.0.0.1:1（拒绝连接），且带 connect_timeout=1：
+// MySQL 的 `root:secret@tcp(...)` 形态喂给 postgres 驱动会在**解析**阶段就报错，
+// 那样这条用例测到的是「DSN 写错」，不是「连接失败」——判据会变味。
+func TestDefaultOpenPostgresDBReturnsConnectionError(t *testing.T) {
+	_, err := openPostgresDB("postgres://root:secret@127.0.0.1:1/go_user_test?sslmode=disable&connect_timeout=1")
 
 	if err == nil {
 		t.Fatal("expected connection error")
 	}
 }
 
-func TestCloseMySQLIgnoresNilDatabase(t *testing.T) {
-	CloseMySQL(t, nil)
+func TestCloseTestDBIgnoresNilDatabase(t *testing.T) {
+	CloseTestDB(t, nil)
 }
 
-func TestCloseMySQLClosesDatabase(t *testing.T) {
-	CloseMySQL(t, openTestutilGormDB(t))
+func TestCloseTestDBClosesDatabase(t *testing.T) {
+	CloseTestDB(t, openTestutilGormDB(t))
 }
 
 func TestResetTablesIgnoresEmptyTableList(t *testing.T) {
@@ -266,8 +285,9 @@ func TestUniqueNameUsesPrefix(t *testing.T) {
 func TestQuoteIdentifierAcceptsSafeIdentifier(t *testing.T) {
 	got := quoteIdentifier(t, "schema_migrations_2026")
 
-	if got != "`schema_migrations_2026`" {
-		t.Fatalf("expected quoted identifier, got %s", got)
+	// PG 用双引号；反引号是 MySQL 的写法，出现在这里说明 quoteIdentifier 没跟着迁移。
+	if got != `"schema_migrations_2026"` {
+		t.Fatalf("expected double-quoted identifier, got %s", got)
 	}
 }
 
@@ -297,8 +317,8 @@ func TestAcquireIntegrationLockSucceeds(t *testing.T) {
 
 // TestBuildRealDBFingerprintRejectsFakeConnection 是 CI 集成测门的反向守卫（A2）：
 // fake driver 明明能 PASS，但**不得**产出 REAL_DB_FINGERPRINT 标记。
-// 若有人把准入判据放宽（例如只看「DATABASE() 非空」），这条会红——
-// 而断言步会因此把「8 条真用例全换成 fake」的门判绿。
+// 若有人把准入判据放宽（例如只看「current_database() 非空」、或把版本判据改成
+// 「非空即可」），这条会红——而断言步会因此把「8 条真用例全换成 fake」的门判绿。
 func TestBuildRealDBFingerprintRejectsFakeConnection(t *testing.T) {
 	db := openTestutilGormDB(t)
 	t.Cleanup(func() {
@@ -308,9 +328,11 @@ func TestBuildRealDBFingerprintRejectsFakeConnection(t *testing.T) {
 		}
 	})
 
+	// fake 能答出 current_database() 与一个"版本"（"0"），所以这里 err 必须为 nil。
+	// 若它开始报错，说明 fake 与真实启动序列的语句对不上了——那会让下面的断言失去意义。
 	marker, err := buildRealDBFingerprint(db)
 	if err != nil {
-		t.Fatalf("fake driver should answer DATABASE()/VERSION() without error, got %v", err)
+		t.Fatalf("fake driver should answer current_database()/server_version without error, got %v", err)
 	}
 	if marker != "" {
 		t.Fatalf("fake connection must not produce %q, got %q", RealDBFingerprintPrefix, marker)
@@ -324,14 +346,20 @@ func TestIsRealDBFingerprint(t *testing.T) {
 		serverVersion string
 		want          bool
 	}{
-		{name: "mysql 8.0", databaseName: "go_user_system_test", serverVersion: "8.0.36", want: true},
-		{name: "mysql with suffix", databaseName: "go_user_system_test", serverVersion: "8.4.0-log", want: true},
-		{name: "empty database", databaseName: "", serverVersion: "8.0.36", want: false},
-		{name: "blank database", databaseName: "   ", serverVersion: "8.0.36", want: false},
-		{name: "fake driver answers zero", databaseName: "go_user_test", serverVersion: "0", want: false},
+		// 正向：真实 PG 的 server_version 是**两段**（本机 17.11 实测）。
+		{name: "postgres 17", databaseName: "go_user_system_test", serverVersion: "17.11", want: true},
+		{name: "postgres 18", databaseName: "go_user_system_test", serverVersion: "18.0", want: true},
+		// 容忍三段（部分构建 / Debian 包可能带修订号）。
+		{name: "postgres with patch", databaseName: "go_user_system_test", serverVersion: "17.11.0", want: true},
+		{name: "empty database", databaseName: "", serverVersion: "17.11", want: false},
+		{name: "blank database", databaseName: "   ", serverVersion: "17.11", want: false},
+		// fake driver 的兜底答案是 "0"——单段，必须被拒。这条是 A2 的核心。
+		{name: "fake driver answers zero", databaseName: "go_user_system_test", serverVersion: "0", want: false},
 		{name: "empty version", databaseName: "go_user_system_test", serverVersion: "", want: false},
-		{name: "not a version", databaseName: "go_user_system_test", serverVersion: "MariaDB", want: false},
-		{name: "two components only", databaseName: "go_user_system_test", serverVersion: "8.0", want: false},
+		// 发行版后缀不是版本号形态（MySQL 的 "8.4.0-log" 同理不适用）。
+		{name: "not a version", databaseName: "go_user_system_test", serverVersion: "PostgreSQL", want: false},
+		// 单段是 fake 的签名，只接受两段及以上。
+		{name: "one component only", databaseName: "go_user_system_test", serverVersion: "17", want: false},
 	}
 
 	for _, testCase := range cases {

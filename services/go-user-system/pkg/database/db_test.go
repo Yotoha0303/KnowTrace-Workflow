@@ -12,7 +12,7 @@ import (
 
 func validDBConfig() *config.Config {
 	return &config.Config{
-		MySQL: config.MySQLConfig{
+		Postgres: config.PostgresConfig{
 			Host:            "127.0.0.1",
 			Port:            "3306",
 			User:            "root",
@@ -42,17 +42,26 @@ func TestBuildDSNRequiresPassword(t *testing.T) {
 	}
 }
 
-func TestBuildDSNBuildsMySQLConnectionString(t *testing.T) {
+func TestBuildDSNBuildsPostgresConnectionString(t *testing.T) {
 	dsn, err := buildDSN(validDBConfig(), "secret")
 
 	if err != nil {
 		t.Fatalf("build dsn failed: %v", err)
 	}
+	// ADR-0019 §2：MySQL 的 `charset=utf8mb4&parseTime=True&loc=Local` 全部消失，
+	// 换成 PG 的 URL DSN。**`timezone=UTC` 是刻意钉的**（见 db.go 的注释：
+	// 服务端默认可能是 Asia/Shanghai，容器里是 UTC，差 8 小时且错了不会响）。
 	expectedParts := []string{
-		"root:secret@tcp(127.0.0.1:3306)/go_user_system",
-		"charset=utf8mb4",
-		"parseTime=True",
-		"loc=Local",
+		"postgres://root:secret@127.0.0.1:3306/go_user_system",
+		"sslmode=disable",
+		"timezone=UTC",
+	}
+	// 反向断言：MySQL 专有的 DSN 参数**不得**再出现
+	forbidden := []string{"charset=utf8mb4", "parseTime=", "loc=Local", "tcp("}
+	for _, part := range forbidden {
+		if strings.Contains(dsn, part) {
+			t.Fatalf("mysql-era parameter %q must not appear in the postgres DSN, got %s", part, dsn)
+		}
 	}
 	for _, part := range expectedParts {
 		if !strings.Contains(dsn, part) {
@@ -71,17 +80,17 @@ func TestInitDBReturnsConfigErrorBeforeOpeningConnection(t *testing.T) {
 	}
 }
 
-func TestInitDBUsesOpenMySQL(t *testing.T) {
+func TestInitDBUsesOpenPostgres(t *testing.T) {
 	t.Setenv("DB_PASSWORD", "secret")
 
-	oldOpenMySQL := openMySQL
+	oldOpenPostgres := openPostgres
 	t.Cleanup(func() {
-		openMySQL = oldOpenMySQL
+		openPostgres = oldOpenPostgres
 	})
 
 	var gotDSN string
 	expectedDB := &gorm.DB{}
-	openMySQL = func(cfg *config.Config, dsn string) (*gorm.DB, error) {
+	openPostgres = func(cfg *config.Config, dsn string) (*gorm.DB, error) {
 		gotDSN = dsn
 		return expectedDB, nil
 	}
@@ -92,9 +101,9 @@ func TestInitDBUsesOpenMySQL(t *testing.T) {
 		t.Fatalf("init db failed: %v", err)
 	}
 	if db != expectedDB {
-		t.Fatal("expected InitDB to return db from openMySQL")
+		t.Fatal("expected InitDB to return db from openPostgres")
 	}
-	if !strings.Contains(gotDSN, "root:secret@tcp(127.0.0.1:3306)/go_user_system") {
+	if !strings.Contains(gotDSN, "postgres://root:secret@127.0.0.1:3306/go_user_system") {
 		t.Fatalf("unexpected dsn: %s", gotDSN)
 	}
 }
@@ -102,13 +111,13 @@ func TestInitDBUsesOpenMySQL(t *testing.T) {
 func TestInitDBReturnsOpenError(t *testing.T) {
 	t.Setenv("DB_PASSWORD", "secret")
 
-	oldOpenMySQL := openMySQL
+	oldOpenPostgres := openPostgres
 	t.Cleanup(func() {
-		openMySQL = oldOpenMySQL
+		openPostgres = oldOpenPostgres
 	})
 
 	openErr := errors.New("open failed")
-	openMySQL = func(cfg *config.Config, dsn string) (*gorm.DB, error) {
+	openPostgres = func(cfg *config.Config, dsn string) (*gorm.DB, error) {
 		return nil, openErr
 	}
 
@@ -119,8 +128,8 @@ func TestInitDBReturnsOpenError(t *testing.T) {
 	}
 }
 
-func TestDefaultOpenMySQLReturnsConnectionError(t *testing.T) {
-	_, err := openMySQL(&config.Config{}, "root:secret@tcp(127.0.0.1:1)/go_user_system?timeout=1ms")
+func TestDefaultOpenPostgresReturnsConnectionError(t *testing.T) {
+	_, err := openPostgres(&config.Config{}, "postgres://root:secret@127.0.0.1:1/go_user_system?sslmode=disable&connect_timeout=1")
 
 	if err == nil {
 		t.Fatal("expected connection error")

@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -96,9 +96,8 @@ func openServiceDryRunDB(t *testing.T) *gorm.DB {
 		}
 	})
 
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		Conn:                      sqlDB,
-		SkipInitializeWithVersion: true,
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
 	}), &gorm.Config{DryRun: true})
 	if err != nil {
 		t.Fatalf("open dry run db failed: %v", err)
@@ -822,14 +821,14 @@ func TestUpdatePasswordChangesHashAndRevokesRefreshTokensInTransaction(t *testin
 func prepareUserServiceIntegrationDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	db := testutil.OpenMySQL(t)
+	db := testutil.OpenTestDB(t)
 	testutil.ResetTables(t, db, "user_roles", "roles", "schema_migrations", "users")
 	testutil.CreateUsersTable(t, db)
 	testutil.CreateRoleAssignmentTables(t, db)
 
 	t.Cleanup(func() {
 		testutil.ResetTables(t, db, "user_roles", "roles", "schema_migrations", "users")
-		testutil.CloseMySQL(t, db)
+		testutil.CloseTestDB(t, db)
 	})
 
 	return db

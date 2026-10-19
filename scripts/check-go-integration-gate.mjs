@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 // CI 门（第一道）：从 `go test -json` 日志判断集成测「看起来」跑过、且「看起来」连的是真实数据库。
 //
 // ⚠️ 本门是**跳线（tripwire），不是证据（proof）**。它能证明的只有一件事：
@@ -9,8 +9,8 @@
 //   于是「假用例补上被删 / 被 skip 让出的槽位」原样复活，甚至可以在**零连库**下全绿。
 //   **攻击成本 = 一行日志。**
 // ⇒ 禁止把本门的绿色引用为「集成测真的连过库」的证据。真证据在第二道门：
-//   `scripts/check-go-integration-server-witness.mjs`（读 MySQL 服务端 general_log，
-//   测试进程够不着那个账本）。本门防的是**误配 / 疏忽**（DSN 没配、用例被无意跳过、
+//   `scripts/check-go-integration-server-witness.mjs`（读 PostgreSQL 的
+//   `pg_stat_database.sessions`，测试进程够不着那个账本）。本门防的是**误配 / 疏忽**（DSN 没配、用例被无意跳过、
 //   fake driver 被误接上），防不住蓄意伪造。
 //
 // 用法：node scripts/check-go-integration-gate.mjs <go-test.jsonl>
@@ -21,7 +21,7 @@
 // 为什么不用 grep 文本日志（falsifier 对第一版的判定，逐条对应本脚本的一条判据）：
 //   A1 只判「非空」→ 删掉 9 条里的 8 条仍绿。本脚本判「**带自有指纹**的顶层集成 PASS
 //      集合 >= 8」——下界是**真实连库**的用例数，不是名字里带 Integration 的用例数。
-//   A2 无法区分真 MySQL 与 fake driver。本脚本要求出现 REAL_DB_FINGERPRINT 标记。
+//   A2 无法区分真连接与 fake driver。本脚本要求出现 REAL_DB_FINGERPRINT 标记。
 //   A3 `^--- SKIP:` 锚在行首，抓不到缩进 4 空格的子测试。本脚本按 JSON 的
 //      Action=="skip" 计数，与缩进无关。
 //   A6 `go test` 对成功的包缓存，`-v` 会回放上次的 PASS。调用方用 `-count=1` 从根上避免；
@@ -53,7 +53,7 @@
 
 import { readFileSync } from "node:fs";
 
-// 真实连 MySQL 的顶层集成用例数的**下界**。
+// 真实连 PostgreSQL 的顶层集成用例数的**下界**。
 //
 // 口径：**带自有指纹**（REAL_DB_FINGERPRINT 事件被 go test 归因到这条测试名下）
 // 且 PASS 的顶层、名字含 Integration 的用例数。
@@ -75,7 +75,7 @@ import { readFileSync } from "node:fs";
 //     TestUserServiceIntegrationRegisterLoginProfileAndNickname
 //     TestUserServiceIntegrationRejectsDisabledUser
 //   名字里带 Integration 的顶层用例一共 **9** 条，第 9 条是
-//   testutil/mysql_test.go 的 TestAcquireIntegrationLockSucceeds —— 它走自注册的 fake driver，
+//   testutil/postgres_test.go 的 TestAcquireIntegrationLockSucceeds —— 它走自注册的 fake driver，
 //   **不产生指纹**，因此在新口径下**自然被排除**（不需要任何名字特判）。
 //
 // ⚠️ **这句话只剩「那条测试碰巧没打日志」这个偶然事实**（qa 的 G1-R1 实测）：
@@ -96,7 +96,7 @@ function isTopLevelIntegrationTest(name) {
 }
 
 // 顶层归一：`TestParent/sub` → `TestParent`。
-// 指纹行由 testutil.OpenMySQL 里的 t.Log 打印，若它是在子测试里被调用的，
+// 指纹行由 testutil.OpenTestDB 里的 t.Log 打印，若它是在子测试里被调用的，
 // Output 事件的 Test 字段会带 "/"。归属应当是**运行它的顶层用例**——门判的是顶层用例。
 function topLevelTestName(name) {
   const slash = name.indexOf("/");
@@ -106,7 +106,7 @@ function topLevelTestName(name) {
 // skip 判据的适用范围：**集成用例**（含其子测试），而不是「一切 skip」。
 //
 // 为什么不能是「一切 skip」：套件里有**故意** skip 的单元测——
-// `TestOpenMySQLSkipsWhenDSNIsMissing`（mysql_test.go）先 t.Setenv 清空 DSN 再调 OpenMySQL，
+// `TestOpenTestDBSkipsWhenDSNIsMissing`（postgres_test.go）先 t.Setenv 清空 DSN 再调 OpenTestDB，
 // 它验的正是「没有 DSN 时应 skip」。把它判红等于要求删掉一条合法用例（实测踩到）。
 //
 // 为什么这样仍然堵得住 A3 / 原始的假绿路径：
@@ -207,7 +207,7 @@ function main(argv) {
         // 只有**集成用例**被跳过才是失败。
         // `go test -json` 对**没有测试文件的包**（本仓的 go-user-system/docs）会发一条
         // 不带 Test 的 `{"Action":"skip"}`（实测）；那既不是用例，也与本门无关。
-        // `TestOpenMySQLSkipsWhenDSNIsMissing` 则是故意 skip 的单元测（见 isIntegrationTestName）。
+        // `TestOpenTestDBSkipsWhenDSNIsMissing` 则是故意 skip 的单元测（见 isIntegrationTestName）。
         if (isTestEvent && isIntegrationTestName(test)) {
           skipped.push(`${pkg || "?"} :: ${test}`);
           skippedIntegrationNames.add(topLevelTestName(test));
@@ -241,7 +241,7 @@ function main(argv) {
       case "output": {
         if (typeof output === "string" && output.includes(FINGERPRINT_PREFIX)) {
           // G1 的核心：指纹**按 Test 归因**。go test -json 会把 t.Log 的 Output 事件
-          // 标上打出它的测试名，所以这里不需要 runtime.Caller、也不需要改 OpenMySQL 的签名。
+          // 标上打出它的测试名，所以这里不需要 runtime.Caller、也不需要改 OpenTestDB 的签名。
           if (isTestEvent) {
             const owner = topLevelTestName(test);
             if (!fingerprintsByTest.has(owner)) {
@@ -345,21 +345,21 @@ function main(argv) {
   }
 
   // ---- 判据 ①（A2）：日志里必须有一条「真实库指纹」这一行 --------------------------------
-  // 它不是「顺带多看一眼」：它是本门唯一**试图**把「真 MySQL」与「fake driver」分开的地方。
+  // 它不是「顺带多看一眼」：它是本门唯一**试图**把「真 PostgreSQL」与「fake driver」分开的地方。
   //
   // ⚠️ **G8：它挡不住伪造，而且攻击成本很低。** 上一版这里写的是「改 fake driver 的兜底返回值
   // 才能造出指纹」——**写大了**。qa 实测（F1/F2/F3）：在任意测试体内写**一行**
   // `t.Log("REAL_DB_FINGERPRINT …")`、或**一行** `fmt.Println(…)`（后者不经 testing，同样被归因），
   // 就足以产出一条合格指纹。不需要改 fake driver，不需要连库。
-  //   也**不要**试图用「前缀必须是 mysql.go:」或「只允许 t.Log」来补救——qa 已实测两条都能绕过：
+  //   也**不要**试图用「前缀必须是 postgres.go:」或「只允许 t.Log」来补救——qa 已实测两条都能绕过：
   //   去掉 t.Helper() 能改前缀，而 fmt.Println 可以手写任意前缀。
   // ⇒ 本判据的真实作用只有两个：① 抓「DSN 配错 / 用例被无意换成 fake」这类**疏忽**；
   //   ② 让「完全没跑」有一个明确的红。它是跳线，不是证据。
-  //   真证据请看 server-witness 门（服务端 general_log 的连接计数）。
+  //   真证据请看 server-witness 门（PostgreSQL pg_stat_database.sessions 的差值）。
   if (fingerprintsByTest.size === 0) {
     problems.push(
       `缺少真实库指纹（${FINGERPRINT_PREFIX.trim()}）。` +
-        "集成测可能根本没连上 MySQL（被换成 fake driver、或 DSN 指向了替身），" +
+        "集成测可能根本没连上 PostgreSQL（被换成 fake driver、或 DSN 指向了替身），" +
         "此时 PASS 事件不能作为「连过真实数据库」的证据。",
     );
   }
@@ -368,7 +368,7 @@ function main(argv) {
     // 门据此无法证明「哪条用例连过库」，按不通过处理。
     problems.push(
       `有 ${unattributedFingerprints.length} 条真实库指纹无法归因到具体用例（事件里没有 Test 字段）。\n` +
-        "指纹必须由某条测试的 t.Log 打出（testutil.OpenMySQL），否则无法计入下界判据。",
+        "指纹必须由某条测试的 t.Log 打出（testutil.OpenTestDB），否则无法计入下界判据。",
     );
   }
 
@@ -464,7 +464,7 @@ function main(argv) {
   // 这句话必须跟着绿色一起出现：绿色单独出现时，读的人很容易把它当成「连过库」的证据。
   console.log(
     "⚠️ 本门是跳线，不是证据：它只核对**测试进程自己在日志里说的话**，一行 t.Log 即可伪造。" +
-      "「集成测真的连过库」以 server-witness 门（服务端 general_log）为准。",
+      "「集成测真的连过库」以 server-witness 门（服务端 pg_stat_database.sessions 差值）为准。",
   );
   return 0;
 }

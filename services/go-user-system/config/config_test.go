@@ -24,7 +24,7 @@ func validConfigYAML() string {
 	return `
 server:
   port: 8082
-mysql:
+postgres:
   host: 127.0.0.1
   port: "3306"
   user: root
@@ -150,8 +150,8 @@ func TestLoadReadsConfigFile(t *testing.T) {
 	if cfg.Server.Port != 8082 {
 		t.Fatalf("expected server port 8082, got %d", cfg.Server.Port)
 	}
-	if cfg.MySQL.Host != "127.0.0.1" {
-		t.Fatalf("expected mysql host 127.0.0.1, got %s", cfg.MySQL.Host)
+	if cfg.Postgres.Host != "127.0.0.1" {
+		t.Fatalf("expected mysql host 127.0.0.1, got %s", cfg.Postgres.Host)
 	}
 	if cfg.JWT.ExpireHours != 24 {
 		t.Fatalf("expected jwt expire hours 24, got %d", cfg.JWT.ExpireHours)
@@ -163,20 +163,20 @@ func TestLoadReadsConfigFile(t *testing.T) {
 		t.Fatalf("expected jwt refresh token expire hours 168, got %d", cfg.JWT.RefreshTokenExpireHours)
 	}
 
-	if cfg.MySQL.MaxOpenConns != 10 {
-		t.Fatalf("expected mysql max open conns 10,got %d", cfg.MySQL.MaxOpenConns)
+	if cfg.Postgres.MaxOpenConns != 10 {
+		t.Fatalf("expected mysql max open conns 10,got %d", cfg.Postgres.MaxOpenConns)
 	}
-	if cfg.MySQL.MaxIdleConns != 5 {
-		t.Fatalf("expected mysql max open conns 5,got %d", cfg.MySQL.MaxIdleConns)
+	if cfg.Postgres.MaxIdleConns != 5 {
+		t.Fatalf("expected mysql max open conns 5,got %d", cfg.Postgres.MaxIdleConns)
 	}
-	if cfg.MySQL.ConnMaxLifetime != 30*time.Minute {
-		t.Fatalf("expected mysql conn max life time 30m,got %d", cfg.MySQL.ConnMaxLifetime)
+	if cfg.Postgres.ConnMaxLifetime != 30*time.Minute {
+		t.Fatalf("expected mysql conn max life time 30m,got %d", cfg.Postgres.ConnMaxLifetime)
 	}
-	if cfg.MySQL.ConnMaxIdleTime != 5*time.Minute {
-		t.Fatalf("expected mysql conn max idle time 5m,got %d", cfg.MySQL.ConnMaxIdleTime)
+	if cfg.Postgres.ConnMaxIdleTime != 5*time.Minute {
+		t.Fatalf("expected mysql conn max idle time 5m,got %d", cfg.Postgres.ConnMaxIdleTime)
 	}
-	if cfg.MySQL.PingTimeout != 3*time.Second {
-		t.Fatalf("expected mysql ping time out 3s,got %d", cfg.MySQL.PingTimeout)
+	if cfg.Postgres.PingTimeout != 3*time.Second {
+		t.Fatalf("expected mysql ping time out 3s,got %d", cfg.Postgres.PingTimeout)
 	}
 }
 
@@ -184,7 +184,7 @@ func validConfig() Config {
 	return Config{
 		Environment: "development",
 		Server:      ServerConfig{Port: 8082},
-		MySQL: MySQLConfig{
+		Postgres: PostgresConfig{
 			Host:            "127.0.0.1",
 			Port:            "3306",
 			User:            "user",
@@ -251,51 +251,51 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "missing mysql host",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Host = ""
+				cfg.Postgres.Host = ""
 			},
-			expectErr: ErrMySQLHostNotFound,
+			expectErr: ErrPostgresHostNotFound,
 		},
 		{
 			name: "missing mysql port",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Port = ""
+				cfg.Postgres.Port = ""
 			},
-			expectErr: ErrInvalidMySQLPort,
+			expectErr: ErrInvalidPostgresPort,
 		},
 		{
 			name: "non numeric mysql port",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Port = "not-a-port"
+				cfg.Postgres.Port = "not-a-port"
 			},
-			expectErr: ErrInvalidMySQLPort,
+			expectErr: ErrInvalidPostgresPort,
 		},
 		{
 			name: "mysql port too low",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Port = "0"
+				cfg.Postgres.Port = "0"
 			},
-			expectErr: ErrInvalidMySQLPort,
+			expectErr: ErrInvalidPostgresPort,
 		},
 		{
 			name: "mysql port too high",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Port = "65536"
+				cfg.Postgres.Port = "65536"
 			},
-			expectErr: ErrInvalidMySQLPort,
+			expectErr: ErrInvalidPostgresPort,
 		},
 		{
 			name: "missing mysql database",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.Database = ""
+				cfg.Postgres.Database = ""
 			},
-			expectErr: ErrMySQLDatabaseNotFound,
+			expectErr: ErrPostgresDatabaseNotFound,
 		},
 		{
 			name: "missing mysql user",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.User = ""
+				cfg.Postgres.User = ""
 			},
-			expectErr: ErrMySQLUserNotFound,
+			expectErr: ErrPostgresUserNotFound,
 		},
 		{
 			name: "missing http server read time out",
@@ -342,37 +342,37 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "missing mysql max open conns",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.MaxOpenConns = 0
+				cfg.Postgres.MaxOpenConns = 0
 			},
-			expectErr: ErrMySQLMaxOpenConnsFailed,
+			expectErr: ErrPostgresMaxOpenConnsFailed,
 		},
 		{
 			name: "missing mysql max idle conns",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.MaxIdleConns = -1
+				cfg.Postgres.MaxIdleConns = -1
 			},
-			expectErr: ErrMySQLMaxIdleConnsFailed,
+			expectErr: ErrPostgresMaxIdleConnsFailed,
 		},
 		{
 			name: "missing mysql conn max life time",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.ConnMaxLifetime = 0
+				cfg.Postgres.ConnMaxLifetime = 0
 			},
-			expectErr: ErrMySQLInvalidConnMaxLifetime,
+			expectErr: ErrPostgresInvalidConnMaxLifetime,
 		},
 		{
 			name: "missing mysql conn max idle time",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.ConnMaxIdleTime = 0
+				cfg.Postgres.ConnMaxIdleTime = 0
 			},
-			expectErr: ErrMySQLInvalidConnMaxIdleTime,
+			expectErr: ErrPostgresInvalidConnMaxIdleTime,
 		},
 		{
 			name: "missing mysql ping time out",
 			mutate: func(cfg *Config) {
-				cfg.MySQL.PingTimeout = 0
+				cfg.Postgres.PingTimeout = 0
 			},
-			expectErr: ErrMySQLInvalidPingTimeout,
+			expectErr: ErrPostgresInvalidPingTimeout,
 		},
 	}
 

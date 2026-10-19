@@ -73,7 +73,7 @@ func defaultAppDeps() appDeps {
 			return service.NewUserService(db).BootstrapAdmin(ctx, req)
 		},
 		migrateUp: func(ctx context.Context, db *sql.DB, dir string) error {
-			if err := goose.SetDialect("mysql"); err != nil {
+			if err := goose.SetDialect("postgres"); err != nil {
 				return err
 			}
 			return goose.UpContext(ctx, db, dir)
