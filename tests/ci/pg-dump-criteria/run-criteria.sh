@@ -89,14 +89,17 @@ real_restore_verify_rc() {
   create_database "$db"
   if pg_restore_in_container --dbname="$db" --no-owner --no-privileges \
       --exit-on-error <"$dump" >"$WORKDIR/$log_name.log" 2>&1; then
-    table_counts "$db" >"$WORKDIR/$log_name.counts.tsv"
-    if cmp -s "$WORKDIR/main-counts.tsv" "$WORKDIR/$log_name.counts.tsv"; then
+    # 恢复成功还不够：产物必须与备份时的逐表计数一致。读计数的 psql 失败同样算「不通过」。
+    if table_counts "$db" >"$WORKDIR/$log_name.counts.tsv" \
+        && cmp -s "$WORKDIR/main-counts.tsv" "$WORKDIR/$log_name.counts.tsv"; then
       rc=0
     else
       rc=1
     fi
   else
-    rc=$?
+    # 归一化为 1：断言只关心「拒绝 / 未拒绝」。pg_restore 的具体错误码不是契约，
+    # 直接透传会让 check 的期望值随 PG 版本漂移。
+    rc=1
   fi
   run_psql postgres --command="DROP DATABASE IF EXISTS \"$db\";" >/dev/null
   echo "$rc"
