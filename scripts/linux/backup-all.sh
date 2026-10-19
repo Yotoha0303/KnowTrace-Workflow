@@ -22,6 +22,19 @@ AUTH_POSTGRES_USER="${AUTH_POSTGRES_USER:-go_user_system}"
 AUTH_POSTGRES_DB="${AUTH_POSTGRES_DB:-go_user_system}"
 AUTH_POSTGRES_IMAGE="${AUTH_POSTGRES_IMAGE:-postgres:18-alpine}"
 
+# 真实恢复验证（verify_dump_by_real_restore）会在**目标实例上建一个临时库再删掉**，
+# 故执行用户必须有 CREATEDB 权限。
+#   - 主应用：POSTGRES_VERIFY_USER 默认 = 主库用户 knowtrace_workflow
+#     （compose.yaml 的 POSTGRES_USER 就是它，即实例超级用户）。
+#   - 认证库：compose 切库（M4）之后**管理用户是 auth_admin**，应用用户 go_user_system
+#     可能只有 LOGIN/CONNECT。生产用户无 CREATEDB 时按实际情况覆盖：
+#         AUTH_POSTGRES_VERIFY_USER=auth_admin
+#     默认沿用 AUTH_POSTGRES_USER，以保持「未切库 / 应用用户即管理用户」时也能跑。
+#   ⚠️ 若两者都没有 CREATEDB，真实恢复验证会失败并**阻断归档** —— 这是有意的：
+#      宁可备份失败，也不落一份没经过真实恢复验证的归档。
+POSTGRES_VERIFY_USER="${POSTGRES_VERIFY_USER:-knowtrace_workflow}"
+AUTH_POSTGRES_VERIFY_USER="${AUTH_POSTGRES_VERIFY_USER:-$AUTH_POSTGRES_USER}"
+
 log() {
   printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
@@ -35,7 +48,7 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"
 }
 
-for command_name in docker git sha256sum tar flock awk sed curl od tr find wc; do
+for command_name in docker git sha256sum tar flock awk sed curl od tr find wc cmp diff; do
   require_command "$command_name"
 done
 
@@ -72,6 +85,10 @@ incomplete_dir="$BACKUP_ROOT/.incomplete-$backup_id"
 final_dir="$BACKUP_ROOT/$backup_id"
 archive_path="$BACKUP_ROOT/$backup_id.tar.gz"
 quiesced=0
+
+# 真实恢复验证用的临时库（每库一条："<compose 服务>|<库名>"）。
+# 任何退出路径（成功、die、SIGTERM、SIGINT）都必须把它们删干净 —— 残留库会随每次备份累积。
+verify_temp_databases=()
 
 mkdir -p "$incomplete_dir/config"
 chmod 700 "$incomplete_dir" "$incomplete_dir/config"
@@ -121,11 +138,120 @@ restore_runtime() {
   return "$restart_rc"
 }
 
+# ----------------------------------------------------------------------------
+# 真实恢复验证（唯一能证明「这份 dump 恢复出来是完整的」的判据）
+# ----------------------------------------------------------------------------
+# 为什么必须有这一道（2026-10-19 CI 实测，PG **18**，run `39258948661`）：
+#   把 dump 的数据区翻 1 字节后，**全量** `pg_restore --file=/dev/null` 返回 **0**；
+#   同一注入在 PG 17.11 上返回 1。⇒ 这条判据**不跨版本成立**。
+#   它是「快速失败前置」，不是完整性证据。真正能证明完整性的是**把数据恢复进一个库**，
+#   再逐表 count(*) 与源库清单逐字节比对。
+#
+# 代价（如实）：每次备份对两个库各做一次临时恢复 —— O(数据量) 的恢复时间 + 一份临时库的磁盘。
+# 换来的是「归档落盘时，它已经被真实恢复验证过一次」。任一环节非 0 ⇒ die，不落归档。
+verify_temp_databases=()
+
+new_verify_db_name() {
+  local service="$1"
+  # 唯一后缀：时间戳 + 本次备份的 nonce + 服务名（两库不同名，避免互相覆盖）。
+  # 只保留 [A-Za-z0-9_]：库名要直接进 SQL 之外的命令行参数，不做引号体操。
+  printf 'knowtrace_verify_%s_%s_%s' \
+    "$(date -u +'%Y%m%d%H%M%S')" "$nonce" "${service//[^A-Za-z0-9]/_}"
+}
+
+# 删除本次备份创建的全部临时验证库。幂等：可被 on_exit 重复调用。
+# 只删「名字带本次 nonce」的库 —— 变量被意外改写时宁可留下也不删错。
+drop_verify_databases() {
+  local entry service database username rc=0 i
+  local remaining=()
+
+  for ((i = ${#verify_temp_databases[@]} - 1; i >= 0; i -= 1)); do
+    entry="${verify_temp_databases[$i]}"
+    IFS='|' read -r service database username <<<"$entry"
+    if [[ "$database" != knowtrace_verify_*"${nonce}"* ]]; then
+      log "WARNING: 拒绝删除不符合命名约定的临时库: $database" >&2
+      remaining+=("$entry")
+      rc=1
+      continue
+    fi
+    if "${compose[@]}" exec -T "$service" dropdb \
+        --username="$username" \
+        --if-exists \
+        --force \
+        --no-password \
+        "$database"; then
+      log "已删除临时验证库: $service/$database"
+    else
+      log "WARNING: 删除临时验证库失败，保留待重试: $service/$database" >&2
+      remaining+=("$entry")
+      rc=1
+    fi
+  done
+
+  # 空数组在 `set -u` 下的展开写法：`"${arr[@]}"` 在 bash < 4.4 会报 unbound variable。
+  verify_temp_databases=(${remaining[@]+"${remaining[@]}"})
+  return "$rc"
+}
+
+# verify_dump_by_real_restore <标签> <compose 服务> <验证用户> <dump 文件> <期望计数>
+#
+# 期望计数 = 备份时从**源库**读到的 *-counts.tsv（已 sort、已去空行）。
+# 恢复库用**同一段 SQL** 读计数，再逐字节 cmp。
+# ⚠️ 恢复验证不得用 `--file=/dev/null`：那条路径不建库、不灌数据，
+#    在 PG 18 上对数据区损坏返回 0（见本节开头的实测）。
+verify_dump_by_real_restore() {
+  local label="$1" service="$2" verify_user="$3" dump_path="$4" expected_counts="$5"
+  local verify_db restored_counts
+
+  verify_db="$(new_verify_db_name "$service")"
+  log "$label：在 $service 上创建临时库 $verify_db 做真实恢复验证（用户 $verify_user，需 CREATEDB）"
+  "${compose[@]}" exec -T "$service" createdb \
+    --username="$verify_user" \
+    --no-password \
+    "$verify_db" \
+    || die "$label 无法创建临时验证库 $verify_db（验证用户 $verify_user 缺 CREATEDB？见脚本头部注释）——备份未完成，不落归档"
+  verify_temp_databases+=("$service|$verify_db|$verify_user")
+
+  "${compose[@]}" exec -T "$service" pg_restore \
+    --username="$verify_user" \
+    --dbname="$verify_db" \
+    --no-owner \
+    --no-privileges \
+    --exit-on-error <"$dump_path" \
+    || die "$label 真实恢复失败（pg_restore --exit-on-error，临时库 $verify_db）——备份未完成，不落归档"
+
+  if ! restored_counts="$(emit_pg_table_counts_sql | "${compose[@]}" exec -T "$service" psql \
+      --username="$verify_user" \
+      --dbname="$verify_db" \
+      --no-password \
+      --no-psqlrc \
+      --tuples-only \
+      --no-align \
+      --field-separator=$'\t' \
+      | sed '/^[[:space:]]*$/d' | sort)"; then
+    die "$label 读不到恢复库 $verify_db 的逐表计数（psql 失败）——备份未完成，不落归档"
+  fi
+  # 空分母不得判绿（AGENTS.md D3）：空清单与空清单 cmp 是「相等」的。
+  [[ -n "$restored_counts" ]] \
+    || die "$label 临时库 $verify_db 的逐表计数为空（恢复了 0 张表）——备份未完成，不落归档"
+  if ! cmp -s <(printf '%s\n' "$expected_counts") <(printf '%s\n' "$restored_counts"); then
+    log "ERROR: $label 逐表计数不一致（左=备份时源库，右=恢复库）" >&2
+    diff --unified <(printf '%s\n' "$expected_counts") <(printf '%s\n' "$restored_counts") >&2 || true
+    die "$label 恢复库的逐表行数与备份时不一致——备份未完成，不落归档"
+  fi
+
+  drop_verify_databases \
+    || die "$label 临时验证库清理失败（$verify_db）——备份未完成，不落归档"
+  log "$label 真实恢复验证通过（逐表计数逐字节一致，临时库已删除）"
+}
+
 on_exit() {
   local original_rc=$?
   local restart_rc=0
   trap - EXIT
   set +e
+  # 临时库先删：即使后面恢复运行时也失败，也不留下残库。
+  drop_verify_databases
   restore_runtime
   restart_rc=$?
   set -e
@@ -139,6 +265,10 @@ on_exit() {
   exit "$original_rc"
 }
 trap on_exit EXIT
+# SIGTERM / SIGINT 走同一条清理路径：systemd 超时杀进程时，临时库同样不能留下。
+trap 'exit 143' SIGTERM
+trap 'exit 130' SIGINT
+
 
 # 逐表行数清单（PostgreSQL）。
 #
@@ -185,15 +315,23 @@ dump_toc_entries() {
 }
 
 # ----------------------------------------------------------------------------
-# 完整性检查：custom 归档必须以 5 个 NUL 结尾
+# 结构判据（**快速失败前置，不是完整性证据**）
 # ----------------------------------------------------------------------------
-# **这一道是实测逼出来的**（PG 17.11，160 KB / 45 TOC 条目的 dump）：
+# 这一族（末 5 字节 / --list / --data-only / 全量 --file=/dev/null）比真实恢复**快得多**，
+# 且能在解压前就拦下明显损坏的归档 —— 所以保留。但**不要**把其中任何一条当作
+# 「完整性已证明」：
+#   2026-10-19 CI 实测（PG **18**，run `39258948661`）：数据区翻 1 字节 ⇒
+#   全量 `--file=/dev/null` **0**、`--data-only` **0**、`--list` **0**、末 5 字节判据 **0**。
+#   同一注入在 PG 17.11 上是 1。⇒ 这一族**不跨版本成立**。
+#   完整性证据只有一条：`verify_dump_by_real_restore`（真实恢复 + 逐表计数逐字节 cmp）。
+#
+# 末 5 字节这一道的来历（实测，PG 17.11，160 KB / 45 TOC 条目的 dump）：
 #   尾部**追加** 128 B 垃圾后：`--list` **0**、`--data-only --file=/dev/null` **0**、
 #   连全量 `pg_restore --file=/dev/null` 也 **0** —— 三条 pg_restore 路径全部看不见它。
 #   原因：最后一条 TOC 记录记的 `size` 与实际读取长度失配时，pg_restore 按**名字长度**
-#   调 archive_read，把追加的字节当成该记录载荷的一部分读走；本机 PG 17.11 上产物碰巧不变，
-#   权威验证方在 PG 18 上观察到「真实恢复 0、数据却只剩 2 张表」——即**版本相关、会静默损坏**。
-#   ⇒ 正确做法是在**归档层**判结构，不要指望 pg_restore 报错。
+#   调 archive_read，把追加的字节当成该记录载荷的一部分读走。
+#   PG 18 实测：**只有它**能拦住 append-128B（list/data_only/full 全 0）。
+#   ⇒ 追加类损坏必须在**归档层**判结构，不要指望 pg_restore 报错。
 #
 # custom 格式的末尾 5 字节是固定的：最后一条 TOC 的偏移（4 字节，pg_backup_archiver 写
 # `arct->tocs.toc_tail` 的偏移）+ 1 个 NUL 结尾。归档里**不可能**出现「最后一条记录
@@ -247,12 +385,13 @@ log "导出 PostgreSQL"
   --no-owner \
   --no-privileges >"$incomplete_dir/postgres.dump"
 "${compose[@]}" exec -T postgres pg_restore --list <"$incomplete_dir/postgres.dump" >/dev/null
-# 与认证库同一套完整性检查（见下方认证库段的长注释）：
+# 结构判据（**快速失败前置，不是完整性证据** —— 见下方「结构判据」小节的长注释）：
 #   --list           只读 TOC，抓得到头部截断（并守住「可解析」）
-#   --file=/dev/null 全量走完恢复流程（TOC + 数据块），不连数据库；抓数据区/TOC 区损坏
+#   --file=/dev/null 全量走完解压流程，不连数据库；**PG 18 上对数据区翻字节返回 0**，不可当证据
 #   require_custom_archive_tail  末 5 字节必须是 NUL，抓**尾部追加**（pg_restore 看不见它）
+#   真正的完整性证据在下面：verify_dump_by_real_restore（真实恢复 + 逐表计数 cmp）。
 "${compose[@]}" exec -T postgres pg_restore --file=/dev/null <"$incomplete_dir/postgres.dump" >/dev/null \
-  || die "主应用 dump 完整性校验失败（全量读取）——备份未完成，不落归档"
+  || die "主应用 dump 解压前置检查失败（全量读取）——备份未完成，不落归档"
 require_custom_archive_tail "$incomplete_dir/postgres.dump" "主应用"
 # ⚠️ 逐表计数**为空也不得落归档**：空清单与恢复端的空清单逐字节 cmp 是「相等」的，
 #    于是恢复演练会对一份没有行数依据的备份判 PASS（空分母判绿，AGENTS.md D3）。
@@ -260,6 +399,10 @@ require_custom_archive_tail "$incomplete_dir/postgres.dump" "主应用"
 postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/postgres-counts.tsv"
 [[ -s "$incomplete_dir/postgres-counts.tsv" ]] \
   || die "主应用逐表计数为空（postgres_counts 无输出）——备份未完成，不落归档"
+# 完整性证据：把 dump 真实恢复进一个临时库，逐表计数与上面刚产出的清单逐字节 cmp。
+verify_dump_by_real_restore \
+  "主应用" postgres "$POSTGRES_VERIFY_USER" \
+  "$incomplete_dir/postgres.dump" "$(cat "$incomplete_dir/postgres-counts.tsv")"
 postgres_db_name="$(current_database_name postgres knowtrace_workflow knowtrace_workflow)"
 [[ -n "$postgres_db_name" ]] || die "读不到主应用实际库名——备份未完成，不落归档"
 postgres_dump_toc_entries="$(dump_toc_entries postgres "$incomplete_dir/postgres.dump")"
@@ -279,30 +422,27 @@ log "导出认证 PostgreSQL"
   --no-privileges >"$incomplete_dir/auth-postgres.dump"
 "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --list <"$incomplete_dir/auth-postgres.dump" >/dev/null \
   || die "认证库 dump 不可解析（pg_restore --list 失败）——备份未完成，不落归档"
-# --list 只读 TOC，**抓不到尾部截断**（实测尾部砍 128B 时仍 exit 0）。再全量读数据块：
-# --data-only 配 --file=/dev/null —— 解压+校验、不写库、**不连数据库**。
+# 结构判据（**快速失败前置，不是完整性证据**）。PG 18 实测（run 39258948661，逐条见下）：
+#   --list                        0（append-128B / 数据区翻字节都拦不住）
+#   --data-only --file=/dev/null  0（同上）
+#   全量 --file=/dev/null         0（**数据区翻字节也返回 0** —— PG 17.11 上曾是 1）
+#   末 5 字节判据                 只有它能拦住 append-128B
+# ⇒ 这一族保留只为「快」，完整性证据只有真实恢复（verify_dump_by_real_restore）。
 "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --data-only --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
-  || die "认证库 dump 数据块不完整（全量读取失败）——备份未完成，不落归档"
-# ⚠️ --data-only 的边界（实测，别写成「完整性已闭环」）：
-#    它只解压**数据块**，TOC 与文件尾不归它管 —— **尾部追加** 128 B 垃圾时它仍 exit 0。
-# 再加一道**全量** --file=/dev/null：走完整的「建 schema + 灌数据」流程，不连数据库
-# （PGHOST=127.0.0.1 PGPORT=1 下实测 exit 0）。实测（PG 17.11，160 KB / 45 TOC 条目）：
-#      TOC / 数据区翻 1 字节（offset 20000 / 60000 / 100000 …）：全量 **1**
-#      截断 1% 或 128 B：全量 **1**
-# **仍有两处抓不到**（本项目不声称堵住，逐条给实测）：
-#   ① **尾部追加**：全量也 exit 0。由下面的 require_custom_archive_tail 单独挡住。
-#   ② **TOC 头部镜像字段翻转**（offset 200 / 600 实测「全绿 + 行数仍对」）：
-#      改的是 TOC 头的 `int`/`off` 镜像，解压仍按头部的 `data` 偏移走，产物无恙；
-#      schema 区的特征字节（offset 2000 / 3000 / 5000 / 6000 / 8000）翻转让 SQL 出现
-#      非法 UTF-8，真实恢复 exit 1，但**全量 --file=/dev/null 只写文件不执行 SQL**，
-#      所以它看不见。那一段由恢复端的真实恢复（--exit-on-error）覆盖。
-#   对外一律表述为「尾部截断、尾部追加、数据区/TOC 区损坏已覆盖；TOC 头部镜像字段未覆盖」。
+  || die "认证库 dump 数据块解压失败（--data-only 读取）——备份未完成，不落归档"
 "${compose[@]}" exec -T "$AUTH_POSTGRES_SERVICE" pg_restore --file=/dev/null <"$incomplete_dir/auth-postgres.dump" >/dev/null \
-  || die "认证库 dump 完整性校验失败（全量读取）——备份未完成，不落归档"
+  || die "认证库 dump 解压前置检查失败（全量读取）——备份未完成，不落归档"
+# 仍然抓不到的两类（**不**由这一族负责，交由真实恢复兜底）：
+#   ① **尾部追加**：全量也 exit 0 → 由 require_custom_archive_tail 在归档层挡住。
+#   ② **TOC 头部镜像字段 / schema 区翻转**：解压不执行 SQL，看不见 → 真实恢复会红。
 require_custom_archive_tail "$incomplete_dir/auth-postgres.dump" "认证库"
 auth_postgres_counts | sed '/^[[:space:]]*$/d' | sort >"$incomplete_dir/auth-postgres-counts.tsv"
 [[ -s "$incomplete_dir/auth-postgres-counts.tsv" ]] \
   || die "认证库逐表计数为空（auth_postgres_counts 无输出）——备份未完成，不落归档"
+# 完整性证据：真实恢复 + 逐表计数逐字节 cmp（见脚本上方 verify_dump_by_real_restore 注释）。
+verify_dump_by_real_restore \
+  "认证库" "$AUTH_POSTGRES_SERVICE" "$AUTH_POSTGRES_VERIFY_USER" \
+  "$incomplete_dir/auth-postgres.dump" "$(cat "$incomplete_dir/auth-postgres-counts.tsv")"
 auth_postgres_db_name="$(current_database_name "$AUTH_POSTGRES_SERVICE" "$AUTH_POSTGRES_USER" "$AUTH_POSTGRES_DB")"
 [[ -n "$auth_postgres_db_name" ]] || die "读不到认证库实际库名——备份未完成，不落归档"
 auth_postgres_dump_toc_entries="$(dump_toc_entries "$AUTH_POSTGRES_SERVICE" "$incomplete_dir/auth-postgres.dump")"
