@@ -26,25 +26,21 @@
 |---|---:|---:|---|
 | 根 vitest（`src/**` + `tests/**`） | **44** | **180 passed + 1 skipped** | `pnpm test`（CI `quality` job，每次 push） |
 | └ 其中条件跳过的 | 1 | 1 | 未配真实 API Key 时跳过，见 2.2 |
-| `services/go-user-system/frontend`（**独立 npm 工作区**） | **7** | **11 passed** | CI `auth-frontend` job（**2026-10-04 新增**）—— 见 2.3 |
+| ~~`services/go-user-system/frontend`~~（**已于 2026-10-19 删除**，issue #37） | ~~7~~ | ~~11~~ | 原 CI `auth-frontend` job **已移除**—— 见 2.3 |
 | Go `_test.go`（`services/go-user-system`） | 26 | 未采集 | CI `go` job（`go test ./...`） |
 | E2E spec（`tests/e2e/`）· **无认证** | 18 | **11 passed + 8 skipped** | CI `e2e` job 第 1 次运行（**2026-10-04 起**，见 §5） |
 | E2E spec（`tests/e2e/`）· **有认证** | 4 | **4 passed** | CI `e2e` job 第 2 次运行（**2026-10-05 新增**，`playwright.auth.config.ts`，见 §5） |
 
-受版本控制的「单测文件」总数为 **52**，其中 **8 个**属于上述独立前端工作区，
-故根 vitest 实际纳入 **44** 个。**两个数字都真实，差在「谁的口径」**——引用时必须说明是哪一个。
+受版本控制的「单测文件」total 在 **2026-10-19 删掉独立前端工作区后**是 **44** 个，
+**全部**由根 vitest 纳入（原先 52 中的 8 个属于该工作区）。
 
 **怎么复算**（三条都要，缺一条就会得出错误对照）：
 
 ```bash
 # ① 受版本控制的测试文件总数（不要用文件系统遍历，会算进 node_modules）
-git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -v '^tests/e2e/' | wc -l   # → 52
-# ② 其中不属于根 vitest 的（独立前端工作区）
-git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -c '^services/go-user-system/frontend/'  # → 8
+git ls-files | grep -E '\.(test|spec)\.tsx?$' | grep -v '^tests/e2e/' | wc -l   # → 44
 # ③ 实际执行的真实数字（唯一权威）
 ./node_modules/.bin/vitest run
-# ④ 独立前端工作区（不在 ③ 的范围里，要单独跑）
-cd services/go-user-system/frontend && npm ci --no-audit --no-fund && npm test   # → 7 files / 11 tests
 ```
 
 
@@ -61,76 +57,26 @@ AI_INTEGRATION_API_KEY=... ./node_modules/.bin/vitest run src/server/ai/provider
 **注意**：它被跳过时**不会**让 CI 变红，所以「CI 全绿」不代表这一组跑过。
 这正是「测试数量」与「测试覆盖」两件事的区别。
 
-### 2.3 独立前端工作区（`services/go-user-system/frontend`）
+### 2.3 独立前端工作区（**已于 2026-10-19 删除**）
 
-该目录是 `git subtree`（提交 `c945952`）引入的 go-user-system 上游仓库副本，
-**自带 `package.json`、`package-lock.json`（376 KB）与自己的 vitest**，
-**不参与根的 pnpm workspace**，7 个 vitest 文件也不在根 vitest 的 `include` 范围内
-（根只含 `src/**` 与 `tests/**`，这个目录两边都不是）。
-
-> **它不参与本部署**：`compose*.yaml` 里没有对应服务，`nginx`/`Caddy` 不引用它，
-> 而 `services/go-user-system/Dockerfile` 只编译 Go 二进制、**不构建这个前端**。
-> **但「不属于运行时」不等于「可以没有门」**——受版本控制的测试必须在某个门里，
-> 否则它会腐烂而没人知道（见下）。
-
-**2026-10-04：已进 CI**（job `auth-frontend`，`npm ci` → `npm test` → `npm run build`）。
-本机实测基线：**`Test Files 7 passed (7)`、`Tests 11 passed (11)`**，构建通过
-（`tsc && vite build`，含类型检查）。
-
-**复算方法**：
-
-```bash
-cd services/go-user-system/frontend
-npm ci --no-audit --no-fund     # 用 npm，不是 pnpm：它有 package-lock.json
-npm test                        # vitest run
-npm run build                   # tsc && vite build
-```
-
-#### 2.3.1 它的 `lint` 脚本曾**必然失败**（2026-10-05 已修）
-
-修复前的失败形态：
-
-```bash
-npm run lint   # ✗ Invalid option '--ext' - perhaps you meant '-c'?
-```
-
-两个独立的原因叠加：
-
-1. `package.json` 里写的是 `eslint . --ext ts,tsx --max-warnings 0`，
-   假设的是 **eslintrc 风格**；但仓库根有一个 **flat config `eslint.config.mjs`**，
-   eslint 从被 lint 的目录**向上查找**配置文件，一旦发现 flat config 就走 flat 模式，
-   而 **flat 模式移除了 `--ext`** → 报错。
-2. 去掉 `--ext` 也还是不行：根 flat config 的 `globalIgnores` 里有
-   `services/go-user-system/**`，把整棵子树（**包括子目录自己的 `.eslintrc.cjs`**）一并忽略，
-   于是 `eslint .` 报「all of the files matching the glob pattern "." are ignored」。
-
-**修法（采用）**：让子目录**自备一份 flat config**（`eslint.config.mjs`），
-这样 eslint 一进子目录就命中，不再向上走到根配置。`lint` 脚本去掉 `--ext`。
-**不需要新依赖** —— 用到的 `@eslint/js`、`@typescript-eslint/*`、
-`eslint-plugin-react-hooks`、`eslint-plugin-react-refresh`、`globals` 本来就在 devDependencies 里。
-
-```bash
-cd services/go-user-system/frontend && npm run lint   # → exit 0
-```
-
-**两道容易踩的坑（都实测踩过）**：
-
-- **别用 `ESLINT_USE_FLAT_CONFIG=false` 去「修」它**。实测确实能过，但那只是把 eslint
-  推回 eslintrc 模式、继续读那个已被根配置忽略的 `.eslintrc.cjs` ——
-  等于承认「这个子目录在仓库的 lint 体系之外」，与 `KT-GAP-32` 要立的规矩相反。
-- **写 flat config 时不要照搬 `js.configs.recommended` 就完事**。它会把 `no-undef` 打开，
-  而**原来的 `.eslintrc.cjs` 其实是关着它的** —— 因为 `plugin:@typescript-eslint/recommended`
-  会关掉 no-undef（TS 自己就报未定义标识符，ESLint 再报一遍是假阳性）。
-  照搬会凭空多出 **81 个** no-undef 报错（`^KeyboardEvent`、`vi`、`describe`… 全是假阳性）。
-  正确的做法是：`globals: { ...globals.browser, ...globals.node }` + vitest 全局 + `"no-undef": "off"`。
-
-**判据可证伪**（不能只看「现在是绿的」）：往 `src/` 放一个未使用变量，
-`npm run lint` 必须报 `@typescript-eslint/no-unused-vars` 且 **exit 1**；删掉后 **exit 0**。
-
-**现在它进了 CI**（job `auth-frontend` 的一步），并且 `Makefile` 的 `check` /
-`CONTRIBUTING.md` 的提交前验证也含它。所以「`make check` 通过」现在**包含**这个前端的 lint。
-
-
+> **本节保留为历史记录。** 该目录（`services/go-user-system/frontend`，`git subtree`
+> 引入的上游副本，68 个文件）**已于 2026-10-19 删除**，理由见 issue #37：
+>
+> - 它是 **Next.js 之外的第二套完整前端**（Vite + React 18 + Redux + react-router-dom），
+>   与主应用**功能完全重复**：登录 / 注册 / 昵称 / 改密 / **RBAC 分配角色**。
+> - 实测核对：主应用 `src/app/account` 的 `assignRolesAction` + `account-center.tsx`
+>   已覆盖其全部能力（`admin/access` 页面对应「管理员：分配角色」表单）。
+> - 它**从来不参与部署**（`compose*.yaml` 无服务、Dockerfile 只编译 Go 二进制）。
+>
+> **一并移除的**：CI 的 `auth-frontend` job · `.github/dependabot.yml` 的该路径条目 ·
+> `Makefile` / `CONTRIBUTING.md` / `.dockerignore` 里的对应行。
+>
+> **删除它同时消掉两条 Dependabot 告警**：`postcss-selector-parser`（Tailwind 3 上**无同
+> major 修复**，`ISSUE-S3-020` / #40）与 `source-map-js` 的该 manifest 副本。
+>
+> **下游影响**：根 vitest 的测试文件总数从 52 降到 **44**（原先 8 个属于该工作区）；
+> 原本由 `auth-frontend` job 守的那 11 个用例**随目录一起消失**——**这是删除了被覆盖的东西，
+> 不是放弃覆盖**。
 
 ### 2.4 覆盖率基线（KT-GAP-07）
 

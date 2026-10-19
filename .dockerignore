@@ -1,7 +1,5 @@
 node_modules
 .next
-services/go-user-system/frontend/node_modules
-services/go-user-system/frontend/dist
 .git
 coverage
 playwright-report
