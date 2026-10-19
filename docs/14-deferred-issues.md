@@ -178,6 +178,70 @@
 
 **边界**：本条**不与移动端首期（M2/M3/M4）并行**。T2 的工作量比 M3 + M4 加起来还大。
 
+## KT-DEFER-011 M5 运维链迁 PostgreSQL 的遗留（同批登记，逐条可核）
+
+状态：**未开始**。来源 M5（`2e019b5..2ac6fc7`）三跳链闸断，`2026-10-19` 由 `qa-validator` / `falsifier` / `gate-auditor` 实测坐实；登记见 [`changes/2026-10-19-M5三跳链解除条件-文档与台账.md`](changes/2026-10-19-M5三跳链解除条件-文档与台账.md)。
+
+当前现象（逐条给出可复核的位置）：
+
+1. `scripts/ops/scripts/monthly-ops.sh:340,345` 的 `500MiB` 内存阈值仍按「postgres / mysql / redis 三容器」标定；切为「两个 PG 实例 + redis」后画像不同。代码注释已显式声明「阈值未重算」，但**数字本身没有更新**。该项只产生 `ops_warn`，**不构成硬门**。
+2. `services/go-user-system/k8s/` 仍指 MySQL：`k8s/mysql.yaml` 整个文件是 MySQL 部署，`k8s/configmap.yaml` 与 `k8s/migration-job.yaml` 含 MySQL 连接参数。**被「部署目标未定」阻塞**（见 [`09-delivery-plan.md`](09-delivery-plan.md) §8「编码前仍需确认」）。
+3. `services/go-user-system/Makefile:282,284` 的 `kind-load-deps` 仍 `docker pull` / `docker save` `mysql:8.4`。同上被部署目标阻塞。
+4. `scripts/linux/offsite-backup.sh:195` 的上传前断言是在 **age 密文**里 `grep -qaE 'AUTH_JWT_SECRET=|AUTH_DB_PASSWORD=|POSTGRES_PASSWORD='`。密文不含明文键名，该断言**恒为假、永不触发**；且键名清单不含 `AUTH_DB_ROOT_PASSWORD` / `METRICS_BEARER_TOKEN` / `KNOWTRACE_ADMIN_PASSWORD`。**非 M5 引入**，登记以免它被当成「已有防线」。
+
+期望行为：
+
+1. 阈值取自**新组合下的实测** `MemAvailable` 基线，不是按容器数线性缩放。
+2. `k8s/` 指向认证 PostgreSQL；改它的前提是部署目标先定，不在目标未定时改。
+3. `kind-load-deps` 预热的是 compose 里实际存在的镜像。
+4. 上传前断言改为对**明文源文件**（加密前）做检查，或改为「解密后抽样检查」；键名清单补齐根 `.env` 的真实键名。
+
+后续验收：
+
+- ① 给出一次「两 PG + redis」组合下的 `MemAvailable` 实测记录，并据它写出新阈值；改后 `monthly-ops.sh` 在正常组合下不误报、在注入低内存时能报。
+- ② `git grep -n "mysql" -- services/go-user-system/k8s/` 在部署目标确定后的提交里清零。
+- ③ `git grep -n "mysql:8.4" -- services/go-user-system/Makefile` 零命中。
+- ④ 一条**负向用例**：对一份刻意含 `AUTH_DB_PASSWORD=` 明文的文件跑上传前检查 ⇒ 必须拒绝且 `exit 2`；当前实现对任何密文都不会触发，可据此判「修好没修好」。
+- ⑤ 上述 ①–④ 中至少 ①④ 有一条进 CI 或留下带日期的实测记录（与 `KT-DEFER-013` 同族）。
+
+## KT-DEFER-012 备份链「自洽 ≠ 正确」的残余
+
+状态：**未开始**（其中「dump 互换」一半已在本分支关闭，见下）。来源 `falsifier` A1/A2 静态判定 + `qa-validator` 复跑确认 `cmp` 行为。
+
+当前现象：`scripts/linux/verify-restore.sh:288` 的 `cmp` 比较的是**同一段 SQL、同一份数据**生成的两份行数文本，因此它只证明「备份与恢复一致」，**不证明「备份的是对的东西」**。
+
+**已经关闭的部分（不要重复登记）**：`verify-restore.sh:113-139` 已断言 metadata 里的库名 / dump 字节数 / TOC 条目数，`verify-restore.sh:261-272` 已把 dump 自身 TOC 头的 `dbname` 与 metadata 对撞。故「把 `auth-postgres.dump` 换成主库 dump 并重算 `SHA256SUMS`」这条攻击**会 `die`**。该修法落在 `4927006`。
+
+**仍然存在的残余**（本次登记的就是它）：
+
+1. **同库名、同 TOC 条目数、同字节数**的坏 dump——三段断言全过。
+2. **行数相等但值不可用**：`ADR-0019` §5.7 的原文例子是「密码哈希列全为 `NULL`」——`COUNT(*)` 相等、`SHA256SUMS` 自洽、`cmp` 全过，而**真恢复后没人能登录**。
+3. `verify-restore.sh` 的输出**只有计数、没有计时**（`ADR-0019` §5.5 已点明），故 RTO/RPO 无读数。
+
+期望行为：恢复演练除数据层自洽外，还有一条**业务级**判据；且「坏但自洽」的 dump 能被抓出来。
+
+后续验收：
+
+- 一条**负向用例**：构造密码哈希列全 `NULL`（或等价的语义损坏）的 dump ⇒ 演练必须**失败**；当前实现下它**通过**，可据此证明缺口存在。
+- 一次**真实账号登录**的恢复演练记录（`ADR-0019` §5.7 要求的判据；`scripts/linux/verify-business-acceptance.sh` 是其载体，本 ADR 未核实覆盖面，须先核）。
+- RTO/RPO 至少各一个实测数字 + 采集命令，否则 `ADR-0019` §5.5 不得写观察期时长。
+- 上述负向用例进 CI（依赖 `KT-DEFER-013`）。
+
+## KT-DEFER-013 M5 的全部用例不在任何 CI 矩阵里
+
+状态：**未开始**。来源 `AGENTS.md` §2 的 03 环准出：「新建用例 **100% 纳入 CI 矩阵**（拒绝门外用例）」。
+
+当前现象：`.github/workflows/` 下只有 `ci.yml` 与 `auth-e2e-repeat.yml` 两个工作流。实测 `git grep -n "scripts/linux" -- .github` **0 命中**；`backup-all.sh` / `verify-restore.sh` / `security-check.sh` / `log_analyzer.py` / `monthly-ops.sh` / `backup-postgres.ps1` / `restore-postgres.ps1` **均无任何工作流调用**。M5 的 P/N 用例（三份变更记录的 §5 表）目前**全在门外**——它们的「通过」只存在于本机一次性实测输出里。
+
+期望行为：03 环的用例由 CI 执行，而不只由人手工复跑。
+
+后续验收：
+
+- 新增一个（或扩展现有）工作流，实际调用上述脚本，且**至少**覆盖：`verify-restore.sh` 的「完整 bundle 通过」与「删掉 `auth-postgres.dump` 失败」两条。
+- 工作流里有 `docker` 可用（这些用例依赖临时容器）；不能因为 runner 无 Docker 而静默跳过——按 `AGENTS.md` §5「缺前置就失败，不静默跳过」。
+- 一次真实 run 的链接或 run id 作为证据；`auth-e2e-repeat.yml` 属 `workflow_dispatch`，须人工触发（见 `docs/CICD-待完成.md`）。
+- 判据：`git grep -n "verify-restore.sh" -- .github` 由 0 命中变为 ≥1，且该 run 在 PR 上真实执行过。
+
 ## 迭代顺序建议
 
 本轮已按以下依赖完成：

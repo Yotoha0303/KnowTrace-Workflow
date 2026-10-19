@@ -3,7 +3,7 @@
 > 依据：`ADR-0019` §5.4(b)（备份/恢复链「必须同一变更改完」）· 施工方案 `M5`。
 > 范围：**只改备份的「生产端」**——恢复端（`verify-restore.sh` / `restore-mysql.ps1`）与巡检/配置在后续两个提交。
 > **不碰**：`compose.yaml` · `compose.production.yaml` · `scripts/install.sh` · `scripts/linux/prepare-host.sh` ·
-> `scripts/start-all.ps1` · `services/go-user-system/compose.yaml` · `services/go-user-system/k8s/*`（部署目标未定，`DEFER-005`）。
+> `scripts/start-all.ps1` · `services/go-user-system/compose.yaml` · `services/go-user-system/k8s/*`（部署目标未定，见 `docs/09-delivery-plan.md` §8 与 `KT-DEFER-011` 第 2–3 条）。
 
 ## 1. 变动范围
 
