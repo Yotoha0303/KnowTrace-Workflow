@@ -335,24 +335,24 @@ jobs:
       # 后果比 KT-GAP-33 修掉的那个 lint 假门更宽 ——
       # 「CI 全 success」当时并不等于「登录链路在门内验过」。
       #
-      # 为什么是 mysql 而不是把 compose 整栈拉起来：本 job 只需要
+      # 为什么不起 compose 整栈：本 job 只需要
       # 「一个能登录的账号」。认证服务是一个 Go 二进制（可以在 step 里直接起），
       # 不必为此引入 docker compose 的重栈。
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: knowtrace-root
-          MYSQL_DATABASE: go_user_system
-          MYSQL_USER: go_user_system
-          MYSQL_PASSWORD: knowtrace
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 30
-
+      auth-postgres:
+          # 2026-10-19（ADR-0019 M2/M3）：认证服务已改走 pgx，MySQL service 连不上。
+          # 改用它自己的 PG 实例（与 go job 同形）；主应用的 postgres 在另一个 service 上。
+          image: postgres:18-alpine
+          env:
+            POSTGRES_DB: go_user_system
+            POSTGRES_USER: go_user_system
+            POSTGRES_PASSWORD: knowtrace
+          ports:
+            - 5433:5432
+          options: >-
+            --health-cmd "pg_isready -U go_user_system -d go_user_system"
+            --health-interval 5s
+            --health-timeout 5s
+            --health-retries 30
     env:
       # 与 quality job 同一套空库。Playwright 的 webServer 会起生产构建。
       DATABASE_URL: postgres://knowtrace:knowtrace@localhost:5432/knowtrace
@@ -395,9 +395,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         run: go run ./cmd migrate up
@@ -406,9 +406,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         # job 级 env 会被所有 step 继承，所以这里直接读 KNOWTRACE_ADMIN_*，
@@ -447,9 +447,9 @@ jobs:
           APP_ENV: development
           APP_PORT: "8082"
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
           REGISTRATION_ENABLED: "false"
@@ -483,10 +483,10 @@ jobs:
         # 改为直接查库断言「账号存在 + 已赋 admin 角色」：
         # 这不消耗限流预算，而且比登录更直接地证明「种子建对了」。
         env:
-          MYSQL_PWD: knowtrace-root
+          PGPASSWORD: knowtrace
         run: |
-          row="$(mysql -h 127.0.0.1 -P 3306 -u root -N -B go_user_system -e "
-            SELECT u.username, GROUP_CONCAT(r.code ORDER BY r.code)
+          row="$(psql -h 127.0.0.1 -p 5433 -U go_user_system -d go_user_system -tA -c "
+            SELECT u.username, string_agg(r.code, ',' ORDER BY r.code)
             FROM users u
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r ON r.id = ur.role_id

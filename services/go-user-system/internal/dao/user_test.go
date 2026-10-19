@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -93,9 +93,8 @@ func openDryRunDB(t *testing.T) *gorm.DB {
 		}
 	})
 
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		Conn:                      sqlDB,
-		SkipInitializeWithVersion: true,
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
 	}), &gorm.Config{DryRun: true})
 	if err != nil {
 		t.Fatalf("open dry run db failed: %v", err)

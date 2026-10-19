@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -72,9 +72,8 @@ func openMainGormDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open sql db failed: %v", err)
 	}
 
-	db, err := gorm.Open(mysql.New(mysql.Config{
-		Conn:                      sqlDB,
-		SkipInitializeWithVersion: true,
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		Conn: sqlDB,
 	}), &gorm.Config{DisableAutomaticPing: true})
 	if err != nil {
 		t.Fatalf("open gorm db failed: %v", err)

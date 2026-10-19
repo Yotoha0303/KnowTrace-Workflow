@@ -42,10 +42,17 @@ func prepareAuthIntegrationDB(t *testing.T) *gorm.DB {
 
 // testTokenHash 造一个 64 位十六进制串，对齐 schema 的 char(64)。
 //
-// 为什么不能随手写 "old-hash"：PG 的 char(n) 读出时**补齐**到 n 位，MySQL 的 CHAR
-// 读出时**截掉**尾部空格——同一份代码在两种库上对 token_hash 的比较结果不同。
-// 真实生产里 token 哈希本来就是 SHA-256 十六进制（恰好 64 位），本测试只是把
-// 这个前提显式化，而不是把判据改松。
+// 为什么不能随手写 "old-hash"：**生产里的 token_hash 本来就是 SHA-256 十六进制**
+// （`internal/auth/token_manager.go:252` 产出的就是 64 位 hex）。测试里写短字符串，
+// 等于用**与生产不符的数据形状**去验一条鉴权路径 —— 它可能在某个库上碰巧过，
+// 在另一个库上不过，而失败原因与真实缺陷无关。本测试只是把这个前提**显式化**，
+// 不是把判据改松。
+//
+// ⚠️ 更正一条曾经写在这里的错误说法：**PG 的 `char(n)` 读出时<u>不会</u>补齐**。
+// 实测（PG 17.11）：`char(64)` 写入 `'old-hash'`（8 字符），`length()` 返回 **8**，
+// 输出也不带尾随空格 —— 补齐到 n 位是 **MySQL 的 `CHAR`** 的行为，不是 PG 的。
+// （PG 的 `bpchar` 只在**比较**时忽略尾随空格。）⇒ 改用真实 hash 的理由是
+// **数据形状与生产一致**，不是"绕开补齐"。
 func testTokenHash(seed string) string {
 	sum := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(sum[:])
@@ -76,11 +83,12 @@ func TestAuthServiceIntegrationConcurrentRefreshAllowsOneSuccessAndRevokesFamily
 	user := createAuthIntegrationUser(t, db, "password1234")
 	now := time.Now().UTC()
 	// token_hash 在 schema 里是 char(64)（migrations/00003_create_refresh_tokens.sql:8）。
-	// **必须用 64 位十六进制**：PG 的 char(n) 读出时会补齐到 n 位（本机 PG 17.11 实测），
-	// 而 MySQL 的 CHAR 读出时会**截掉**尾部空格——于是 "old-hash" 写进去、读回来是
-	// "old-hash" + 55 个空格，与入参不相等 ⇒ 真实库上 RotateRefreshToken 走 ErrRefreshTokenInvalid，
-	// 两条并发请求**都**失败。那条路径在 MySQL 上绿、在 PG 上红，正是本迁移要暴露的东西。
-	// 单位测全用 fake repo，观测不到这一点。
+	// **必须用 64 位十六进制**——理由：生产里的 token_hash 就是 SHA-256 hex
+	// （`internal/auth/token_manager.go:252`），写短字符串等于用与生产不符的数据形状
+	// 去验一条鉴权路径。单位测全用 fake repo，观测不到这一点。
+	//
+	// ⚠️ 这里原写「PG 的 char(n) 读出时会补齐到 n 位」——**那条实测是错的**
+	// （PG 17.11：`length()` 返回 8，不补）；补齐是 MySQL `CHAR` 的行为。详见 testTokenHash 的注释。
 	current := &model.RefreshToken{
 		UserID:    user.ID,
 		JTI:       "old-jti",
