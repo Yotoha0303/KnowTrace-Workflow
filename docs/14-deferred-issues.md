@@ -239,8 +239,28 @@
 
 - 新增一个（或扩展现有）工作流，实际调用上述脚本，且**至少**覆盖：`verify-restore.sh` 的「完整 bundle 通过」与「删掉 `auth-postgres.dump` 失败」两条。
 - 工作流里有 `docker` 可用（这些用例依赖临时容器）；不能因为 runner 无 Docker 而静默跳过——按 `AGENTS.md` §5「缺前置就失败，不静默跳过」。
-- 一次真实 run 的链接或 run id 作为证据；`auth-e2e-repeat.yml` 属 `workflow_dispatch`，须人工触发（见 `docs/CICD-待完成.md`）。
+- 一次真实 run 的链接或 run id 作为证据；`auth-e2e-repeat.yml` 属 `workflow_dispatch`，须人工触发（见 `docs/CICD-待完成.md` E2）。**触发前**须先确认该工作流本身已切到 PostgreSQL（见 `KT-DEFER-014`）。
 - 判据：`git grep -n "verify-restore.sh" -- .github` 由 0 命中变为 ≥1，且该 run 在 PR 上真实执行过。
+
+> ⚠️ **本条不因「静态语法门」而关闭**：`bash -n` / `python -m py_compile` / PowerShell AST 这类门
+> 只证明**脚本能被解析器读懂**，不证明**行为正确**。本条的验收要求是**行为用例**（完整 bundle 通过、
+> 删件失败）。两者在观测上不同形——「解析通过」和「跑对了」不能互替（`D3`）。
+
+## KT-DEFER-014 `auth-e2e-repeat.yml` 仍以 MySQL 起认证服务，与 `ci.yml` 已切 PG 不一致
+
+状态：**未开始**。来源：`2026-10-19` 补齐 M5 解除条件时对本仓库两个工作流的复核（非 M5 改动引入）。
+
+当前现象：`.github/workflows/auth-e2e-repeat.yml:57-70` 仍声明 `mysql:8.0` service；迁移步 `:99-108`、种子步 `:110-122`、启动认证服务步 `:133-146` 的连接参数全部是 MySQL 形态（`DB_HOST=127.0.0.1` / `DB_PORT=3306` / `DB_USER=root` / `DB_NAME=go_user_system`）。而 `.github/workflows/ci.yml:294-303` 已把 e2e 的认证库换成 `auth-postgres`（`postgres:18-alpine`，端口 `5433`），其注释 `:295-296` 写明「认证服务已改走 pgx，MySQL service 连不上」。
+
+**未实测**：本机无法执行 GitHub Actions。「该工作流会在迁移步失败」是由 `ci.yml` 上述注释推出的**预期**，**不是**一次真实运行的读数——按 D1，不要把它当结论引用。
+
+期望行为：两个工作流的认证段**同构**——同一个 PG 服务、同一组连接参数。现状是「门里那条」（`ci.yml`）已切、「体检那条」（本工作流）没切，两者跑出来的结果**不可比**。
+
+后续验收：
+
+- `git grep -n "mysql:8.0" -- .github/workflows/auth-e2e-repeat.yml` 零命中。
+- 一次真实 `workflow_dispatch` 运行（须人工触发，见 `docs/CICD-待完成.md` E2）输出 `RESULT=PASS` 且 `flaky_total=0`。
+- 改动**前后各一次**运行的 `summary.csv` 留档：否则「改完没坏」只是一句断言。
 
 ## 迭代顺序建议
 

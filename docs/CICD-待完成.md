@@ -18,7 +18,7 @@
 | # | 缺什么 | 在哪补 | 谁做 |
 | --- | --- | --- | --- |
 | **E1** | M4（`compose.yaml` 切库）合并后、观察期结束前，**定时备份 unit 的启用/禁用**——这个决定没有默认值，且**安装器会自动启用**：`scripts/linux/deploy-observability.sh:135` 无条件 `systemctl enable --now knowtrace-workflow-backup.timer`。M4 之前启用 ⇒ 每天整点 `backup-all.sh` 停在 `Compose 服务未运行: auth-postgres`，**每天都失败一次**；M4 之后不启用 ⇒ 观察期内**没有新的定时备份** | 主机 `systemctl enable --now knowtrace-workflow-backup.timer` / `systemctl disable --now knowtrace-workflow-backup.timer`（单元文件在 `deploy/systemd/knowtrace-workflow-backup.{service,timer}`） | **人** |
-| **E2** | **认证态 e2e 的一次人工触发运行**。`.github/workflows/auth-e2e-repeat.yml:21-31` 只有 `workflow_dispatch`，`schedule:` 被刻意注释掉，**不会自己跑**；切库改动了认证服务的连库方式，需要一次真实运行确认认证套件仍通过 | GitHub → Actions → **Auth E2E Repeat** → Run workflow（可改 `repeat`，判据建议 ≥ 5）；判定看产物 `auth-e2e-repeat/result.txt` 的 `clean_pass` 与 `flaky_total`，**有 flaky 就算没过**（第 235–240 行） | **人** |
+| E2 | **认证态 e2e 的一次人工触发运行**。`.github/workflows/auth-e2e-repeat.yml:21-31` 只有 `workflow_dispatch`，`schedule:` 被刻意注释掉，**不会自己跑**。⚠️ **触发前须先处理 `KT-DEFER-014`**：该工作流的认证段仍是 MySQL（`:57-70` 的 `mysql:8.0`、`:99-146` 的 `DB_PORT=3306`），而 `ci.yml:294-303` 已切到 PG——**现在触发，大概率在迁移步就失败，量到的不是抖动** | GitHub → Actions → **Auth E2E Repeat** → Run workflow（可改 `repeat`，判据建议 ≥ 5）；判定看产物 `auth-e2e-repeat/result.txt` 的 `clean_pass` 与 `flaky_total`，**有 flaky 就算没过**（第 235–240 行） | **人** |
 | **E3** | 已部署主机上的 `EXPECTED_SERVICES` **与仓库模板不一致**。模板现为 `app auth postgres auth-postgres auth-redis`（`scripts/ops/ops.conf.example:97`），而主机真正生效的是 `/etc/knowtrace/ops.conf`，**不受版本控制影响**。模板注释已写明这期间须显式覆盖 | 主机 `/etc/knowtrace/ops.conf`：M4 之前该行应覆盖为仍存在的服务名，M4 之后删掉覆盖 | **人** |
 | **E4** | **异地备份链路的运行时凭据**。`scripts/linux/offsite-backup.sh` 要求三样外部状态：`OFFSITE_AGE_RECIPIENT_FILE`（默认 `/etc/knowtrace/age-recipient.pub`，第 62 行）、`OFFSITE_REMOTE`（第 63、107 行）、可用的 `rclone` remote（第 112 行 `rclone lsd`）。三者**都不在仓库里**，且远端账户属外部系统，AI 无法创建或校验 | 主机 `/etc/knowtrace/ops.conf` 与 rclone 配置；age 公钥文件按第 98 行给出的安装命令落到 `OFFSITE_AGE_RECIPIENT_FILE` | **人** |
 
@@ -31,7 +31,7 @@
 | # | 阻塞别的什么 | 阻塞=是/否 | 说明 |
 | --- | --- | --- | --- |
 | E1 | **M4 之后的备份连续性** | **是** | 未做决定之前，观察期内是否仍有定时备份**处于未定状态**。至少一种状态（提前启用）会**每天都失败一次**，且失败原因不是备份坏了，而是「切库还没落地」 |
-| E2 | **`KT-DEFER-009` 的验收判据**、以及「切库没弄坏认证 e2e」这个结论 | **是** | `KT-DEFER-009` 明写：「在 E2E 进入 CI 之前，本条的验收判据是**有一份人工触发运行的全绿报告并标注人工触发**」 |
+| E2 | **`KT-DEFER-009` 的验收判据**、以及「切库没弄坏认证 e2e」这个结论 | **是** | `KT-DEFER-009` 明写：「在 E2E 进入 CI 之前，本条的验收判据是**有一份人工触发运行的全绿报告并标注人工触发**」。且**它自己先被 `KT-DEFER-014` 阻塞**——工作流没切 PG 之前，触发出来的失败不携带信息 |
 | E3 | **daily 巡检的可信度** | **是** | `EXPECTED_SERVICES` 与实际不符时，巡检会报一个**假的「缺容器」FAIL**；真假故障混在一起，等于巡检读数不可用 |
 | E4 | **`ADR-0019` §5.5 异地副本前置**、灾备「密文已离开 VPS」这条结论 | **否**（当前） | 该条**不阻塞** M4 切库：`compose` 切库不依赖异地通道。但在「能否从灾难中恢复」这一级，它仍是硬前置 |
 
@@ -45,7 +45,7 @@
 | 内容 | 为什么不在本表 |
 | --- | --- |
 | `compose.yaml` 仍指向 `auth-mysql` | 这是**仓库里的代码/配置**，AI 能改——属 M4 的范围，不是「只能由人做」 |
-| `.github/workflows/auth-e2e-repeat.yml` 里的 `mysql:8.0` service 定义 | 同上：**仓库内文件**。属 M4 或单独提交（见 `KT-DEFER-013` 的 CI 矩阵缺口）。**本分支刻意不改**：它与 `ci.yml` 的认证段同构，改一处不改另一处会让两者失去可比性 |
+| `.github/workflows/auth-e2e-repeat.yml` 里的 `mysql:8.0` service 定义 | 同上：**仓库内文件**。属 M4 或单独提交；**已登记为 `KT-DEFER-014`**（它现在与 `ci.yml:294-303` 不一致，而两者本应同构）。**本分支刻意不改**：本角色只改文档，不改脚本/工作流 |
 | `services/go-user-system/k8s/` 与 `Makefile` 的 MySQL 引用 | 仓库内文件，且被「部署目标未定」阻塞——已登记为 `KT-DEFER-011` 第 2–3 条 |
 | 任何 `GAP-` / `DEFER-` 编号的缺口 | 它们是「框架/代码自身该做而未做」，去 `docs/14-deferred-issues.md` |
 
