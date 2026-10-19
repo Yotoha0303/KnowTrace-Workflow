@@ -273,8 +273,11 @@ auth_toc_actual="$(docker exec "$auth_pg_container" sh -ec \
 # 先校验「可解析 + 数据块完整」，再恢复：--list 只读 TOC，抓不到尾部截断；
 # --data-only 配 --file=/dev/null 会把数据块完整读一遍（不写库、不连库）。
 # ⚠️ 边界（别写成「完整性闭环」）：--data-only **抓不到尾部追加**（实测 append-128B 仍 0）；
-#    尾部追加与 TOC 区损坏由**备份端**的全量 `pg_restore --file=/dev/null` 与
-#    TOC 条目数挡住；TOC 头部 `int`/`off` 镜像字段翻转仍会静默漏过（见 backup-all.sh 的注释）。
+#    尾部追加由**备份端**的末 5 字节结构判据挡住；数据区 / TOC 区损坏由**备份端**的
+#    真实恢复验证（verify_dump_by_real_restore）挡住 —— **不是**由全量 `--file=/dev/null`：
+#    PG 18 实测（CI run 39258948661）该路径对数据区翻字节返回 0。本脚本自身的真实恢复
+#    （--exit-on-error + 逐表计数 cmp）是同一口径的第二道。
+#    TOC 头部 `int`/`off` 镜像字段翻转仍会静默漏过（见 backup-all.sh 的注释）。
 docker exec "$auth_pg_container" sh -ec 'pg_restore --list /tmp/auth-postgres.dump >/dev/null' \
   || die "认证库 dump 不可解析（pg_restore --list 失败）"
 docker exec "$auth_pg_container" sh -ec 'pg_restore --data-only --file=/dev/null /tmp/auth-postgres.dump >/dev/null' \
