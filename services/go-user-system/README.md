@@ -107,16 +107,17 @@ docker compose run --rm -e BOOTSTRAP_ADMIN_USERNAME -e BOOTSTRAP_ADMIN_PASSWORD 
 cmd/                    后端入口与 bootstrap-admin 命令
 config/                 配置加载、环境变量覆盖和校验
 internal/               handler、service、repository、DAO、middleware、模型
-pkg/                    MySQL 和 Redis 客户端
+pkg/                    PostgreSQL 和 Redis 客户端
 router/                 API、健康检查和 Swagger 路由
 migrations/             Goose SQL migration
-frontend/               React 应用、单元测试、Playwright 和 Nginx 镜像
 k8s/                    Kubernetes 工作负载、迁移 Job、服务和 Ingress
 deploy/monitoring/       Prometheus 配置与基础告警规则
-scripts/ops/             MySQL 备份与隔离恢复演练脚本
+scripts/ops/             PostgreSQL 备份与隔离恢复演练脚本
 docs/                   API、部署、迭代计划和操作记录
 .github/                 CI、CodeQL、发布、模板和依赖更新配置
 ```
+
+> **注意**：历史独立的 React 前端（`frontend/`）已在 PR #50 中全量废弃并删除，认证页面与完整的浏览器端到端流程由外层 Next.js 主应用统一提供与维护。
 
 ## 配置
 
@@ -135,13 +136,11 @@ docs/                   API、部署、迭代计划和操作记录
 | `TRUSTED_PROXIES` | 允许提供真实客户端 IP 的代理 IP/CIDR，逗号分隔 | Compose 网络 CIDR |
 | `BOOTSTRAP_ADMIN_USERNAME` | 一次性管理员用户名 | 命令执行时必填 |
 | `BOOTSTRAP_ADMIN_PASSWORD` | 一次性管理员密码 | 命令执行时必填 |
-| `FRONTEND_PORT` / `BACKEND_PORT` | Compose 宿主机端口 | `8080` / `8082` |
+| `BACKEND_PORT` | Compose 宿主机端口 | `8082` |
 
 所有支持的数据库、JWT、Redis 和 HTTP 参数见 `.env.example`、`config.yml` 与 `config/config.go`。密码策略为至少 12 个字符、最多 72 个 UTF-8 字节；登录对不存在用户、错误密码和禁用用户统一返回凭据错误。
 
 ## 本地开发
-
-后端：
 
 ```bash
 go mod download
@@ -149,15 +148,7 @@ make migrate-up
 go run ./cmd
 ```
 
-前端：
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-前端开发服务器监听 `http://127.0.0.1:8888`，并把 `/api` 代理到 `http://localhost:8082`。本地 Goose 配置模板为 `.env.goose.example`。
+服务默认监听 `http://localhost:8082`。本地 Goose 配置模板为 `.env.goose.example`。
 
 ## 测试与门禁
 
@@ -167,21 +158,11 @@ make test
 make race-test
 make vet
 make security
-make frontend-check
 make migrate-validate
 make observability-validate
 ```
 
-MySQL 集成测试要求 `TEST_DATABASE_DSN` 指向数据库名包含 `test` 的专用库；测试工具会拒绝操作其他数据库。
-
-完整浏览器测试需要先启动 Compose 栈并保持注册开启：
-
-```bash
-npx playwright install chromium --with-deps
-npm --prefix frontend run test:e2e
-```
-
-GitHub CI 还会构建前后端镜像、校验 Compose/Kubernetes 清单，并在完整栈上执行 Playwright 流程。
+PostgreSQL 集成测试要求 `TEST_DATABASE_DSN` 指向数据库名包含 `test` 的专用库；测试工具会拒绝操作其他数据库。认证流程的端到端浏览器测试在仓库根目录下运行（`pnpm test:e2e`）。
 
 ## 最小可运维
 

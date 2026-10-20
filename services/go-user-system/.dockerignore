@@ -6,7 +6,6 @@
 !.env.*.example
 bin
 coverage*
-frontend
 logs
 tmp
 *.log
