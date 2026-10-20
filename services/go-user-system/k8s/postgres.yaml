@@ -12,6 +12,39 @@ spec:
     requests:
       storage: 5Gi
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-user-system-postgres-initdb
+  namespace: go-user-system
+data:
+  10-auth-db.sh: |
+    #!/bin/sh
+    set -eu
+    : "${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD 必须传给本容器}"
+    : "${POSTGRES_USER:?}"
+
+    psql --username "$POSTGRES_USER" --dbname postgres \
+         --set=ON_ERROR_STOP=1 --set=pwd="$AUTH_DB_PASSWORD" <<'SQL'
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'go_user_system') THEN
+        CREATE ROLE go_user_system LOGIN;
+      END IF;
+    END
+    $$;
+    SELECT format('ALTER ROLE go_user_system PASSWORD %L', :'pwd') \gexec
+    SELECT 'CREATE DATABASE go_user_system OWNER go_user_system'
+     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'go_user_system') \gexec
+    SQL
+
+    is_super="$(psql --username "$POSTGRES_USER" --dbname postgres -tA \
+      -c "SELECT rolsuper FROM pg_roles WHERE rolname='go_user_system'")"
+    if [ "$is_super" != "f" ]; then
+      echo "FATAL: go_user_system 是超级用户（rolsuper=$is_super）——拒绝继续" >&2
+      exit 1
+    fi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,10 +70,15 @@ spec:
               name: postgres
           env:
             - name: POSTGRES_DB
-              value: go_user_system
+              value: postgres
             - name: POSTGRES_USER
-              value: go_user_system
+              value: auth_admin
             - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: go-user-system-secret
+                  key: DB_ROOT_PASSWORD
+            - name: AUTH_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: go-user-system-secret
@@ -83,10 +121,18 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d/10-auth-db.sh
+              subPath: 10-auth-db.sh
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: go-user-system-postgres-pvc
+        - name: initdb
+          configMap:
+            name: go-user-system-postgres-initdb
+            defaultMode: 0755
 ---
 apiVersion: v1
 kind: Service
