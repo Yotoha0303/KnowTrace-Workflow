@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Yotoha0303/go-user-system/actions/workflows/ci.yml/badge.svg)](https://github.com/Yotoha0303/go-user-system/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Yotoha0303/go-user-system/actions/workflows/codeql.yml/badge.svg)](https://github.com/Yotoha0303/go-user-system/actions/workflows/codeql.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 一个可自托管的全栈用户认证与 RBAC 项目。后端使用 Go、Gin、GORM、MySQL 和 Redis，前端使用 React、TypeScript 和 Vite。项目提供可重复的数据库迁移、完整容器栈、Kubernetes 清单、自动化测试和发布流水线。
 
@@ -240,4 +240,4 @@ make ops-restore-drill BACKUP_PATH="backups/go_user_system-<timestamp>.sql"
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
