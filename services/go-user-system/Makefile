@@ -108,7 +108,7 @@ help:
 	@echo   observability-up    Start the full stack with Prometheus
 	@echo   observability-down  Stop the full stack with Prometheus
 	@echo   observability-validate Validate Prometheus and Compose configuration
-	@echo   ops-backup          Back up Compose MySQL with checksum and manifest
+	@echo   ops-backup          Back up Compose PostgreSQL with checksum and manifest
 	@echo   ops-restore-drill   Restore BACKUP_PATH into RESTORE_DATABASE \(must end with _restore_test\)
 	@echo golangci:
 	@echo   lint                Run golangci-lint
@@ -249,11 +249,11 @@ observability-down:
 	$(OBSERVABILITY_COMPOSE) down
 
 ops-backup:
-	$(POWERSHELL) -NoProfile -File scripts/ops/backup-mysql.ps1
+	$(POWERSHELL) -NoProfile -File scripts/ops/backup-postgres.ps1
 
 ops-restore-drill:
 	$(if $(BACKUP_PATH),,$(error BACKUP_PATH is required))
-	$(POWERSHELL) -NoProfile -File scripts/ops/restore-mysql.ps1 -BackupPath "$(BACKUP_PATH)" -RestoreDatabase "$(or $(RESTORE_DATABASE),go_user_system_restore_test)" -ConfirmRestore
+	$(POWERSHELL) -NoProfile -File scripts/ops/restore-postgres.ps1 -BackupPath "$(BACKUP_PATH)" -RestoreDatabase "$(or $(RESTORE_DATABASE),go_user_system_restore_test)" -ConfirmRestore
 
 ci:
 	$(MAKE) lint

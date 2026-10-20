@@ -254,7 +254,7 @@ else
     fi
 
     expected_missing=""
-    for service in $(ops_conf_list EXPECTED_SERVICES "app auth postgres auth-mysql auth-redis"); do
+    for service in $(ops_conf_list EXPECTED_SERVICES "app auth postgres auth-postgres auth-redis"); do
         ops_service_running "$service" \
             || expected_missing="${expected_missing}${service} "
     done

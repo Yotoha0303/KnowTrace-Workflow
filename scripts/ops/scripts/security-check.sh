@@ -90,12 +90,18 @@ env_key_state() {
     local file="$1" key="$2"
     [[ -f "$file" ]] || { printf 'nofile'; return 0; }
 
-    local line value
-    line="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=//p" "$file" 2>/dev/null | head -n 1 || printf '')"
-    if [[ -z "$line" ]]; then
+    # ⚠️ 用 `grep -c` 先判「键在不在」，**不要**拿「值非空」当存在性判据。
+    #    原实现是 `line="$(sed -n 's/^KEY=//p' | head -n 1)"` —— `KEY=`（空值）时
+    #    line 是空串，被当成 missing（INFO），于是「密钥为空」这件生产事故
+    #    在报告里降格成一句「可能由其他机制注入」。
+    #    实测（2026-10-19）：`AUTH_DB_PASSWORD=` ⇒ missing(INFO)，而应当是 empty(FAIL)。
+    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
         printf 'missing'
         return 0
     fi
+
+    local line value
+    line="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=//p" "$file" 2>/dev/null | head -n 1 || printf '')"
 
     value="$line"
     value="${value#"${value%%[![:space:]]*}"}"
@@ -383,18 +389,38 @@ check_env_file() {
 check_env_file "$ENV_FILE" "main"
 check_env_file "$OBSERVABILITY_ENV_FILE" "observability"
 
-# 关键密钥项：只判断「是否仍为默认占位值」或「缺失」，绝不打印值本身
+# 关键密钥项：只判断「是否仍为默认占位值」或「缺失 / 为空」，绝不打印值本身。
+#
+# ⚠️ 键名必须与**真实文件里的键名**一致，否则判据永远打在空气上：
+#    实测（2026-10-19）原清单查 `JWT_SECRET` / `AUTH_COOKIE_SECRET`，
+#    而根 `.env` 的真实键是 `AUTH_JWT_SECRET`（`.env.example:18`），
+#    仓库里根本不存在 `AUTH_COOKIE_SECRET`；`METRICS_BEARER_TOKEN` 则在
+#    `.env.observability`（`.env.observability.example:5`），不在根 `.env`。
+#    结果：三项全部落进 `missing` 分支被记成 INFO —— **一个也没真正检查过**。
 if [[ -f "$ENV_FILE" ]]; then
-    for key in MYSQL_ROOT_PASSWORD JWT_SECRET AUTH_COOKIE_SECRET METRICS_BEARER_TOKEN; do
-        state="$(env_key_state "$ENV_FILE" "$key")"
+    # 键名<TAB>所在文件；空文件列表示「用主 .env」。
+    # 新增密钥时**先 `grep -rn '^KEY=' .env.example services/*/.env.example` 确认键名**。
+    while IFS=$'\t' read -r key key_file; do
+        [[ -n "$key" ]] || continue
+        [[ -n "$key_file" ]] || key_file="$ENV_FILE"
+        if [[ ! -f "$key_file" ]]; then
+            ops_info "env.key.$key" "配置文件不存在: $key_file"
+            continue
+        fi
+        state="$(env_key_state "$key_file" "$key")"
         case "$state" in
             set)         ops_ok "env.key.$key" "已设置（值未读取、未输出）" ;;
             placeholder) ops_fail "env.key.$key" "仍是默认/占位值，生产环境必须更换" ;;
-            empty)       ops_fail "env.key.$key" "为空" ;;
-            missing)     ops_info "env.key.$key" "未在该文件中出现（可能由其他机制注入）" ;;
+            empty)       ops_fail "env.key.$key" "为空（$key_file 里键存在但值为空）" ;;
+            missing)     ops_fail "env.key.$key" "在 $key_file 中不存在 —— 键名可能改了或该文件未初始化（旧实现记 INFO，等于没查）" ;;
             nofile)      ops_info "env.key.$key" "配置文件不存在" ;;
         esac
-    done
+    done <<EOF
+AUTH_DB_ROOT_PASSWORD	$ENV_FILE
+AUTH_DB_PASSWORD	$ENV_FILE
+AUTH_JWT_SECRET	$ENV_FILE
+METRICS_BEARER_TOKEN	$OBSERVABILITY_ENV_FILE
+EOF
 
     # 生产环境必须开启安全 Cookie
     secure_state="$(env_key_state "$ENV_FILE" AUTH_COOKIE_SECURE)"

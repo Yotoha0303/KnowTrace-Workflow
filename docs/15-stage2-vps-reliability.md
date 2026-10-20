@@ -4,7 +4,7 @@
 
 阶段二不是“生成了一个 dump 文件”就算完成。验收分为五条相互独立的证据链：
 
-1. 备份：PostgreSQL、认证 MySQL、Redis 会话状态、`data/uploads` 与恢复配置均进入同一备份集，并有 SHA-256 清单。
+1. 备份：PostgreSQL、认证 PostgreSQL、Redis 会话状态、`data/uploads` 与恢复配置均进入同一备份集，并有 SHA-256 清单。
 2. 恢复：备份实际恢复到隔离临时容器，数据库表行数与上传文件统计一致，且没有连接或挂载生产资源。
 3. 异地：至少一份备份离开 VPS，并在传输前或落盘时加密；解密私钥/口令不得与密文放在一起。
 4. 压测：先测只读健康端点，再测业务读路径；保留请求规模、并发、错误率、P95/P99 与服务器资源证据。
@@ -18,8 +18,8 @@
 
 | 组件 | 内容 | 备份方式 | 验证方式 |
 | --- | --- | --- | --- |
-| PostgreSQL | KnowTrace-Workflow 业务、AI Run、主张与证据链 | `pg_dump` custom format | `pg_restore` 到临时 PostgreSQL，并逐表比对行数 |
-| MySQL | 账号、密码哈希、角色与 refresh token | `mysqldump --single-transaction` | 导入临时 MySQL，并逐表比对行数 |
+| PostgreSQL | KnowTrace-Workflow 业务、AI Run、主张与证据链 | `pg_dump` custom format → `postgres.dump` / `postgres-counts.tsv` | `pg_restore` 到临时 PostgreSQL，并逐表比对行数 |
+| PostgreSQL（认证库） | 账号、密码哈希、角色与 refresh token | `pg_dump` custom format → `auth-postgres.dump` / `auth-postgres-counts.tsv` | `pg_restore` 到临时认证 PostgreSQL，并逐表比对行数 |
 | Redis | 登录会话/限流等短期状态 | RDB 快照 | 临时 Redis 加载、`redis-check-rdb` 与 key 数核对 |
 | 上传目录 | 证据图片等文件 | `tar.gz` | 解包并核对文件数和总字节数 |
 | 恢复配置 | `.env`、Compose、Caddy、Nginx、SSH 配置 | root-only 文件副本 | SHA-256 清单；人工检查恢复所需字段 |
@@ -66,7 +66,7 @@ sudo /opt/knowtrace/scripts/linux/verify-restore.sh "$archive" \
   | sudo tee /var/log/knowtrace-restore-check-last.log
 ```
 
-只有退出码为 0 且输出 `RESTORE_VERIFY=PASS`，才能记录为“已通过隔离恢复验证”。验证器按 PostgreSQL、MySQL、Redis 顺序启动临时容器，不发布端口、不加入生产网络、不挂载生产卷，并在结束时只删除 `knowtrace-restore-check-*` 前缀的容器。
+只有退出码为 0 且输出 `RESTORE_VERIFY=PASS`，才能记录为“已通过隔离恢复验证”。验证器按 PostgreSQL、认证 PostgreSQL、Redis 顺序启动临时容器，不发布端口、不加入生产网络、不挂载生产卷，并在结束时只删除 `knowtrace-restore-check-*` 前缀的容器。
 
 这项检查验证归档可恢复及数据统计，不等同于完整浏览器业务旅程。灾难恢复演练还需要在隔离环境完成登录、查询一条已知记录和读取一张已知图片。
 

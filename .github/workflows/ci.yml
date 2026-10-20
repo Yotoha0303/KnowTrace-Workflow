@@ -98,6 +98,127 @@ jobs:
       - name: Build production bundle
         run: pnpm build
 
+  # ---------------------------------------------------------------------------
+  # 静态脚本语法门（M5 三跳链 03 环阻断项 G-6 的第一层）
+  # ---------------------------------------------------------------------------
+  # 问题：`backup-all.sh` / `verify-restore.sh` / `security-check.sh` / `log_analyzer.py` /
+  # `monthly-ops.sh` / 备份恢复 `.ps1` 在本文件里**调用 0 处** —— 它们是运维链的实际执行者，
+  # 却从未被任何自动化门解析过一次。一个语法错只会在**服务器上、备份窗口里**才暴露。
+  #
+  # 本 job 是**静态门**，不是证据：它只证明「脚本能被各自的解析器读懂」，
+  # **不证明**脚本行为正确。行为判据在下面的 `backup-dump` job 与本文件其余 job。
+  #
+  # 覆盖（tests/ci/static-script-gate.ps1 实现）：
+  #   *.sh  -> bash -n            （parses, 不执行）
+  #   *.py  -> python -m py_compile
+  #   *.ps1 -> PowerShell AST 解析器
+  # 三条硬要求：① 文件数按**目录递归**统计，扫描到 0 个**判失败**（空分母不得判绿，D3）；
+  #             ② 任一文件解析失败即非零退出；③ 缺 bash / python 也判失败，不静默跳过。
+  #
+  # 为什么用 pwsh 而不是写三个 bash 块：`.ps1` 的语法只能用 PowerShell 自己的解析器判，
+  # ubuntu-latest 预装 pwsh，一个 job 覆盖三种语言、一处维护。
+  #
+  # 负向验证（本机实测，见 docs/changes/2026-10-19-M5修复-F9-CI判据.md）：
+  #   注入 sh / py / ps1 语法错各一次 -> 该步 exit 1；还原后 exit 0。
+  # ⚠️ 本机**没有 pwsh**（只有 Windows PowerShell 5.1），故 CI 上的 pwsh 7 路径
+  #    本机无法验证——脚本刻意只用 5.1 也支持的 API（Parser::ParseFile / Get-ChildItem）。
+  static-script-gate:
+    name: Static script syntax gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Parse every shell, Python and PowerShell script
+        shell: pwsh
+        run: ./tests/ci/static-script-gate.ps1
+
+  # ---------------------------------------------------------------------------
+  # PG 18 上的 dump 判据（M5 三跳链 03 环阻断项 G-6 的第二层 —— **证据**）
+  # ---------------------------------------------------------------------------
+  # 问题：`scripts/linux/backup-all.sh` / `verify-restore.sh` 的 dump 完整性判据
+  # （`--list` / `--data-only --file=/dev/null` / 全量 `--file=/dev/null` /
+  #   末 5 字节为 NUL / 逐表计数非空）**全部实测都在 PG 17.11**；
+  #   唯一一次 PG 18 的观察（append 后真实恢复 0、数据只剩 2 张表）没有仓内证据。
+  #
+  # 本 job 在 `postgres:18-alpine` 上：
+  #   1. 用仓库里真实的迁移（主应用 `drizzle/*.sql`、认证库 goose）建两个库 + 夹具；
+  #   2. 正向跑完三道门 + 尾判据 + 真实恢复 + 逐表计数逐字节 cmp；
+  #   3. 负向注入：尾部追加 / 尾部截断 / 数据区翻 1 字节 / 空库计数为空。
+  # 每一项打印「判据名 / 期望 / 实际」，失败以非零退出。
+  #
+  # ⚠️ **它不跑 `backup-all.sh` 本体**（那要 docker compose 整栈）。它是**同形的**
+  #    pg_dump / pg_restore 调用，不是整链。真 compose 全链属第三层，本提交不含。
+  # ⚠️ 客户端在 **service 容器内**执行（`docker exec`）：runner 预装的是 PG 16 一代的
+  #    pg_dump/pg_restore，对 PG 18 服务端会 `server version mismatch`。
+  #    这也和生产链路同形（backup-all.sh 也是 `compose exec` 里跑客户端）。
+  # ⚠️ 两个负向用例要求**稳定复现**：随机尾字节用**固定种子**（tests/ci/.../mutate.py），
+  #    数据区注入用**固定比例**，均不依赖运行时随机。
+  backup-dump:
+    name: Backup dump criteria on PostgreSQL 18
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      # ⚠️ `job` 与 `runner` 上下文**在 job 级 env 里不可用**（GitHub 只在 step 级 env 提供），
+      #    放在这里会让整个 workflow 解析失败：
+      #    "Unrecognized named-value: 'job'" —— 而且失败形态是**该 push 上所有 job 都不跑**，
+      #    不是这一个 job 红。2026-10-19 实测（run 39258541786：jobs 为空、conclusion=failure）。
+      #    故 `PG_SERVICE_CONTAINER` 与 `WORKDIR` 下沉到每个 step 的 env。
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # 先跑纯逻辑自检：迁移解析、注入器确定性、尾判据、逐表计数 SQL 与
+      # scripts/linux/backup-all.sh 的逐字一致性。它**不需要 Docker 之外的任何服务**，
+      # 红了就说明判据本身坏了 —— 这样后面 PG 阶段的红才只可能归因于 PG 行为。
+      - name: Self-check the criteria harness (no database needed)
+        env:
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh self-check
+
+      - name: Positive - migrated schema, real dump, all four gates, real restore
+        env:
+          PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh positive
+
+      - name: Negative - append, truncate, data-byte flip, empty counts
+        env:
+          PG_SERVICE_CONTAINER: ${{ job.services.postgres.id }}
+          WORKDIR: ${{ runner.temp }}/pg-dump-criteria
+        run: ./tests/ci/pg-dump-criteria/run-criteria.sh negative
+
+      # 判据的原始产物（dump、注入件、恢复日志、逐表计数）留成工件：
+      # 「门红了但看不出为什么」时，这些是唯一的第一手材料。
+      - name: Upload dump criteria artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-dump-criteria
+          path: ${{ runner.temp }}/pg-dump-criteria
+          retention-days: 14
+
   go:
     name: Go authentication service tests
     runs-on: ubuntu-latest

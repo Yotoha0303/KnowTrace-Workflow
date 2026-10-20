@@ -330,7 +330,7 @@ ops_container_for_service() {
     #    为什么不用"配置一个前缀"：前缀要从 compose 项目名来，而项目名不一定等于
     #    部署目录名（本机是 /opt/knowtrace 但项目名是 knowtrace-workflow）。
     #    逼着运维去配一个前缀＝把同一个坑换个地方埋。锚定 `-<service>-<n>$` 既准确
-    #    又与前缀无关；`auth` 不会误配 `auth-mysql`（那后面跟的是字母不是数字）。
+    #    又与前缀无关；`auth` 不会误配 `auth-postgres`（那后面跟的是字母不是数字）。
     name="$(docker ps --format '{{.Names}}' 2>/dev/null \
             | grep -E -- "-${service}-[0-9]+$" | head -n1)"
     [[ -n "$name" ]] && { printf '%s' "$name"; return 0; }
