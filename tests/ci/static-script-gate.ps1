@@ -68,13 +68,29 @@ function Test-ExcludedPath {
 function Get-RepositoryScripts {
     param([string]$Extension)
 
-    return @(
-        Get-ChildItem -LiteralPath $RepositoryRoot -Recurse -File -ErrorAction Stop |
-            Where-Object { $_.Extension -eq $Extension } |
-            Where-Object { -not (Test-ExcludedPath -FullName $_.FullName) } |
-            ForEach-Object { $_.FullName } |
-            Sort-Object
-    )
+    $results = New-Object System.Collections.Generic.List[string]
+    $stack = New-Object System.Collections.Generic.Stack[string]
+    $stack.Push($RepositoryRoot)
+
+    while ($stack.Count -gt 0) {
+        $current = $stack.Pop()
+        $items = Get-ChildItem -LiteralPath $current -Force -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            if ($item.PSIsContainer) {
+                if (-not (Test-ExcludedPath -FullName $item.FullName)) {
+                    $stack.Push($item.FullName)
+                }
+            } else {
+                if ($item.Extension -eq $Extension -and -not (Test-ExcludedPath -FullName $item.FullName)) {
+                    $results.Add($item.FullName)
+                }
+            }
+        }
+    }
+
+    $sorted = @($results)
+    [Array]::Sort($sorted)
+    return $sorted
 }
 
 function Invoke-NativeCheck {
