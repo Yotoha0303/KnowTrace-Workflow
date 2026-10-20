@@ -1,0 +1,28 @@
+# 回滚基线：切库前的 MySQL 认证库定义（ADR-0019 §5.3 / §5.5）
+# 默认不启动：docker compose -f compose.yaml -f deploy/rollback/auth-mysql.yaml --profile rollback up
+# 观察期结束、回滚窗口关闭后（M6）才允许删除本文件。
+name: knowtrace-workflow
+
+services:
+  auth-mysql:
+    profiles: ["rollback"]
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${AUTH_DB_ROOT_PASSWORD:?rollback baseline requires the pre-cutover secret}
+      MYSQL_DATABASE: go_user_system
+      MYSQL_USER: go_user_system
+      MYSQL_PASSWORD: ${AUTH_DB_PASSWORD:?rollback baseline requires the pre-cutover secret}
+    volumes:
+      - auth_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  auth_mysql_data:
+    name: go-user-system_mysql_data
+    external: true
