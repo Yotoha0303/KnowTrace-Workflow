@@ -55,9 +55,16 @@ PG 的超级用户是实例级的。为避免超级用户与应用角色混淆�
 
 ## 5. 回滚方案
 
-- 统一栈中通过 `deploy/rollback/auth-mysql.yaml` 保留了切库前的服务定义，带 `profiles: ["rollback"]`，默认不启动。
-- 若需回滚至 MySQL：
-  `docker compose -f compose.yaml -f deploy/rollback/auth-mysql.yaml --profile rollback up`
+- 统一栈中通过 `deploy/rollback/auth-mysql.yaml` 保留切库前的服务定义与环境覆盖（KT-GAP-54）：
+  1. **外部卷前置**：宿主机在执行回滚前，若外部数据卷已不存在，须先显式创建：
+     ```bash
+     docker volume inspect go-user-system_mysql_data >/dev/null 2>&1 || docker volume create go-user-system_mysql_data
+     ```
+  2. **服务覆盖与隔离**：该文件将 `auth-postgres` 标记为 `profiles: ["disabled"]` 予以启动隔离；显式重写 `auth`、`auth-migrate`、`auth-bootstrap` 的环境变量 `DB_HOST: auth-mysql`、`DB_PORT: "3306"` 并将 `depends_on` 重定向至 `auth-mysql: condition: service_healthy`。
+  3. **回滚启动**：
+     ```bash
+     docker compose -f compose.yaml -f deploy/rollback/auth-mysql.yaml --profile rollback up -d
+     ```
   配合 ADR-0019 §5.5 的回滚步骤恢复 MySQL 数据与配置。
 - 观察期结束（M6）后方可物理清理 `deploy/rollback/` 目录。
 

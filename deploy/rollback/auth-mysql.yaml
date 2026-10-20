@@ -1,9 +1,16 @@
-# 回滚基线：切库前的 MySQL 认证库定义（ADR-0019 §5.3 / §5.5）
-# 默认不启动：docker compose -f compose.yaml -f deploy/rollback/auth-mysql.yaml --profile rollback up
+# 回滚基线：切库前的 MySQL 认证库与相关服务覆盖定义（ADR-0019 §5.3 / §5.5 / KT-GAP-54）
+# 默认不启动。执行回滚前，若外部卷缺失须先执行：
+#   docker volume inspect go-user-system_mysql_data >/dev/null 2>&1 || docker volume create go-user-system_mysql_data
+# 启动回滚栈命令：
+#   docker compose -f compose.yaml -f deploy/rollback/auth-mysql.yaml --profile rollback up -d
 # 观察期结束、回滚窗口关闭后（M6）才允许删除本文件。
 name: knowtrace-workflow
 
 services:
+  # 隔离 PostgreSQL 认证库：将其置入未激活 profile，防止回滚时同时启动
+  auth-postgres:
+    profiles: ["disabled"]
+
   auth-mysql:
     profiles: ["rollback"]
     image: mysql:8.0
@@ -21,6 +28,41 @@ services:
       retries: 30
       start_period: 15s
     restart: unless-stopped
+
+  auth-migrate:
+    environment:
+      DB_HOST: auth-mysql
+      DB_PORT: "3306"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?rollback baseline requires the pre-cutover secret}
+      DB_NAME: go_user_system
+    depends_on:
+      auth-mysql:
+        condition: service_healthy
+
+  auth-bootstrap:
+    environment:
+      DB_HOST: auth-mysql
+      DB_PORT: "3306"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?rollback baseline requires the pre-cutover secret}
+      DB_NAME: go_user_system
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+
+  auth:
+    environment:
+      DB_HOST: auth-mysql
+      DB_PORT: "3306"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?rollback baseline requires the pre-cutover secret}
+      DB_NAME: go_user_system
+    depends_on:
+      auth-bootstrap:
+        condition: service_completed_successfully
+      auth-redis:
+        condition: service_healthy
 
 volumes:
   auth_mysql_data:
