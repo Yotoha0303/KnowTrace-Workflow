@@ -11,7 +11,7 @@
   <a href="https://knowtrace-workflow.vercel.app"><img alt="Deployed on Vercel" src="https://img.shields.io/badge/Frontend-Vercel-black?logo=vercel"></a>
   <a href="https://go-user-system.onrender.com/readyz"><img alt="Auth on Render" src="https://img.shields.io/badge/Auth-Render-46E3B7?logo=render&logoColor=black"></a>
   <img alt="Database Supabase" src="https://img.shields.io/badge/Database-Supabase-3ECF8E?logo=supabase&logoColor=white">
-  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <a href="https://github.com/Yotoha0303/KnowTrace-Workflow/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/Yotoha0303/KnowTrace-Workflow"></a>
 </p>
 
@@ -289,6 +289,6 @@ Compose 部署
 
 ## 开源
 
-KnowTrace-Workflow 自有代码采用 [MIT License](LICENSE)。
+KnowTrace-Workflow 自有代码采用 [Apache License 2.0](LICENSE)。
 
 GitHub：<https://github.com/Yotoha0303/KnowTrace-Workflow>
