@@ -19,19 +19,19 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.78",
-    "@ai-sdk/openai": "^4.0.91",
-    "@ai-sdk/openai-compatible": "^3.0.67",
-    "ai": "^7.0.137",
+    "@ai-sdk/anthropic": "^4.0.82",
+    "@ai-sdk/openai": "^4.0.96",
+    "@ai-sdk/openai-compatible": "^3.0.71",
+    "ai": "^7.0.143",
     "drizzle-orm": "^0.45.4",
     "exceljs": "4.4.0",
     "jszip": "3.10.2",
-    "lucide-react": "^1.55.0",
-    "next": "16.4.1",
+    "lucide-react": "^1.59.0",
+    "next": "16.4.2",
     "postgres": "^3.4.9",
     "prom-client": "15.1.3",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "server-only": "^0.0.1",
     "zod": "^4.6.6"
   },
@@ -43,15 +43,15 @@
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "dotenv": "^18.0.7",
+    "dotenv": "^18.0.8",
     "drizzle-kit": "^0.31.11",
     "esbuild": "0.28.2",
     "eslint": "^9.39.5",
-    "eslint-config-next": "16.4.0",
-    "jsdom": "^30.1.2",
+    "eslint-config-next": "16.4.2",
+    "jsdom": "^30.1.3",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.5"
   }
 }
