@@ -4,7 +4,7 @@ server:
 postgres:
   host: 127.0.0.1
   port: "5432"
-  user: root
+  user: go_user_system
   database: go_user_system
   maxOpenConns: 10
   maxIdleConns: 5
