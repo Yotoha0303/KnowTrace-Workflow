@@ -158,4 +158,4 @@ See [docs/README.md](docs/README.md) for the complete documentation index.
 
 ## License
 
-MIT License.
+Apache License 2.0.

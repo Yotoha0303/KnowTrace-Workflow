@@ -68,7 +68,7 @@ docker compose --project-directory .   --env-file .env --env-file .env.observabi
 - UI 变化请附截图，但先移除真实姓名、记录正文、密钥和其他隐私信息。
 - 新增行为应同步更新测试与相关文档。
 
-提交代码即表示你同意按照项目的 [MIT License](LICENSE) 提供该贡献。
+提交代码即表示你同意按照项目的 [Apache License 2.0](LICENSE) 提供该贡献。
 
 ## 目录与命名约定
 
