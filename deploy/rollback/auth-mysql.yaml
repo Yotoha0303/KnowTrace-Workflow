@@ -36,7 +36,7 @@ services:
       DB_USER: go_user_system
       DB_PASSWORD: ${AUTH_DB_PASSWORD:?rollback baseline requires the pre-cutover secret}
       DB_NAME: go_user_system
-    depends_on:
+    depends_on: !reset
       auth-mysql:
         condition: service_healthy
 
