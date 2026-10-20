@@ -7,7 +7,7 @@ x-default-logging: &default-logging
 services:
   postgres:
     logging: *default-logging
-  auth-mysql:
+  auth-postgres:
     logging: *default-logging
   auth-redis:
     logging: *default-logging

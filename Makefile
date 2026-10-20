@@ -1,17 +1,17 @@
 POWERSHELL ?= powershell
 
-.PHONY: help init up start down stop restart ps logs auth-logs test auth-test auth-frontend-test check build backup deploy
+.PHONY: help init up start down stop restart ps logs auth-logs test auth-test check build backup deploy
 
 help:
 	@echo KnowTrace-Workflow commands:
 	@echo   make init       Generate local secrets and default administrator settings
-	@echo   make up         Build and start KnowTrace-Workflow, go-user-system, PostgreSQL, MySQL and Redis
+	@echo   make up         Build and start KnowTrace-Workflow, go-user-system, PostgreSQL and Redis
 	@echo   make down       Stop and remove containers while preserving data volumes
 	@echo   make restart    Restart the complete stack
 	@echo   make ps         Show unified service status
 	@echo   make logs       Follow KnowTrace-Workflow and authentication logs
-	@echo   make check      Run frontend (Next.js), auth frontend and Go backend quality gates
-	@echo   make backup     Back up KnowTrace-Workflow PostgreSQL and go-user-system MySQL
+	@echo   make check      Run frontend (Next.js) and Go backend quality gates
+	@echo   make backup     Back up KnowTrace-Workflow PostgreSQL and go-user-system PostgreSQL
 	@echo   make deploy     Rebuild and redeploy the app on the VPS, then assert the running revision matches HEAD
 
 init:
@@ -32,17 +32,13 @@ logs:
 	docker compose logs -f app auth
 
 auth-logs:
-	docker compose logs -f auth auth-migrate auth-bootstrap auth-mysql auth-redis
+	docker compose logs -f auth auth-migrate auth-bootstrap auth-postgres auth-redis
 
 test:
 	pnpm test
 
 auth-test:
 	cd services/go-user-system && go test ./...
-
-# 认证服务的 React 前端。它是 `git subtree` 引入的上游副本，自带 package-lock.json，
-# **不参与根 pnpm workspace**，所以这里用 npm 而不是 pnpm。
-auth-frontend-test:
 
 build:
 	pnpm build
