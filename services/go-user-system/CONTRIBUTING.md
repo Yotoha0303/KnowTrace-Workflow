@@ -19,7 +19,7 @@ Start the complete stack by following `docs/deploy/local-compose.md`. For backen
 4. Run the relevant local checks.
 5. Open a pull request using the repository template.
 
-Required checks for a full-stack change:
+Required checks before opening a pull request:
 
 ```bash
 make lint
@@ -27,11 +27,10 @@ make test
 make race-test
 make vet
 make security
-make frontend-check
 make migrate-validate
 ```
 
-Run `npm run test:e2e --prefix frontend` against a running Compose stack when changing authentication or browser flows.
+Note: The legacy standalone React frontend has been deprecated and replaced by the outer Next.js application (PR #50). All authentication flows and browser end-to-end tests are maintained at the repository root level.
 
 ## Database changes
 

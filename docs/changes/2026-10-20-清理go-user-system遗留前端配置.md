@@ -1,7 +1,6 @@
 # 2026-10-20 · 清理 go-user-system 遗留前端配置与脚本
 
-> **状态：先写后填（§5.2② / §2 02 环）。** 本文件先落「要改什么、判据是什么」，
-> 实测结果在实施后回填；**未回填前不得宣布完成**。
+> **状态：实施完成与验证回填。**
 > 依据：PR #50 物理删除 `services/go-user-system/frontend/`，M4 (PR #55) 清理 k8s 前端清单；
 > 收口清理 `services/go-user-system/` 内已失效的前端编译、检查、发布目标与 CI 配置。
 
@@ -9,7 +8,7 @@
 
 | 文件 | 改动 | 判据 |
 | --- | --- | --- |
-| `services/go-user-system/Makefile` | 移除 `K8S_FRONTEND_IMAGE` 变量；移除 `frontend-check` 目标与 help；移除 `k8s-build` 前端构建、`k8s-deploy` 前端清单应用、`k8s-status` 前端 Pod 检查 | `make -n` 不触发已删除的 frontend 目录 |
+| `services/go-user-system/Makefile` | 移除 `K8S_FRONTEND_IMAGE` 变量；移除 `frontend-check` 目标与 help；移除 `k8s-build` 前端构建、`k8s-deploy` 前端清单应用、`k8s-status` 前端 Pod 检查 | `make help` 正常解析且无死命令 |
 | `services/go-user-system/.github/dependabot.yml` | 移除 `/frontend` 依赖扫描配置 | 无 `/frontend` 块 |
 | `services/go-user-system/.github/workflows/ci.yml` | 移除 `frontend:` job；`e2e` job 去除对 `frontend` 的 needs 依赖与安装步骤 | 工作流语法正常 |
 | `services/go-user-system/.github/workflows/release.yml` | 移除 `Check frontend` 步骤；移除组件矩阵中的 `frontend` 项；移除打包 `frontend/dist` 逻辑 | 仅构建和发布后端产物 |
@@ -33,6 +32,10 @@
 
 若需回滚，通过 `git revert` 对应提交即可。不涉及线上数据状态变化。
 
-## 5. 执行结果（回填区）
+## 5. 执行结果（实测回填）
 
-- 待实施后填入真实命令与输出。
+| # | 检查项 | 验证命令 | 实测结果 |
+| --- | --- | --- | --- |
+| 1 | 静态脚本语法门 | `powershell -File tests/ci/static-script-gate.ps1` | **PASS**（受检 54 个文件，失败 0 个，exit 0） |
+| 2 | Makefile 目标解析 | `make -C services/go-user-system help` | **PASS**（成功打印各目标，exit 0） |
+| 3 | 死命令与配置检索 | `git grep -in "frontend" -- services/go-user-system/` | 仅保留文档说明与历史记录文档，所有命令、CI 与发布矩阵均清零 |
