@@ -1,9 +1,9 @@
-# mysql.yaml — in-cluster MySQL for go-user-system
-# Service name MUST match configmap mysql.host: go-user-system-mysql
+# postgres.yaml — in-cluster PostgreSQL for go-user-system
+# Service name MUST match configmap postgres.host: go-user-system-postgres
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: go-user-system-mysql-pvc
+  name: go-user-system-postgres-pvc
   namespace: go-user-system
 spec:
   accessModes:
@@ -15,50 +15,48 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: go-user-system-mysql
+  name: go-user-system-postgres
   namespace: go-user-system
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: go-user-system-mysql
+      app: go-user-system-postgres
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        app: go-user-system-mysql
+        app: go-user-system-postgres
     spec:
       containers:
-        - name: mysql
-          image: mysql:8.4
+        - name: postgres
+          image: postgres:18-alpine
           ports:
-            - containerPort: 3306
-              name: mysql
+            - containerPort: 5432
+              name: postgres
           env:
-            - name: MYSQL_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: go-user-system-secret
-                  key: DB_ROOT_PASSWORD
-            - name: MYSQL_DATABASE
+            - name: POSTGRES_DB
               value: go_user_system
-            - name: MYSQL_USER
+            - name: POSTGRES_USER
               value: go_user_system
-            - name: MYSQL_PASSWORD
+            - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: go-user-system-secret
                   key: DB_PASSWORD
-          args:
-            - --character-set-server=utf8mb4
-            - --collation-server=utf8mb4_unicode_ci
+            - name: TZ
+              value: UTC
+            - name: PGTZ
+              value: UTC
           readinessProbe:
             exec:
               command:
-                - sh
-                - -c
-                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD"
+                - pg_isready
+                - -U
+                - go_user_system
+                - -d
+                - go_user_system
             initialDelaySeconds: 15
             periodSeconds: 5
             timeoutSeconds: 5
@@ -66,9 +64,11 @@ spec:
           livenessProbe:
             exec:
               command:
-                - sh
-                - -c
-                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD"
+                - pg_isready
+                - -U
+                - go_user_system
+                - -d
+                - go_user_system
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
@@ -82,23 +82,23 @@ spec:
               memory: "1Gi"
           volumeMounts:
             - name: data
-              mountPath: /var/lib/mysql
+              mountPath: /var/lib/postgresql/data
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: go-user-system-mysql-pvc
+            claimName: go-user-system-postgres-pvc
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: go-user-system-mysql
+  name: go-user-system-postgres
   namespace: go-user-system
 spec:
   selector:
-    app: go-user-system-mysql
+    app: go-user-system-postgres
   ports:
-    - name: mysql
-      port: 3306
-      targetPort: 3306
+    - name: postgres
+      port: 5432
+      targetPort: 5432
       protocol: TCP
   type: ClusterIP

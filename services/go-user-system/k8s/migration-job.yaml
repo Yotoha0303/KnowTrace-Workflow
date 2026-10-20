@@ -24,8 +24,8 @@ spec:
           args:
             - |
               if command -v goose >/dev/null 2>&1; then
-                exec goose -dir /app/migrations mysql \
-                  "${DB_USER}:${DB_PASSWORD}@tcp(${DB_HOST}:${DB_PORT})/${DB_NAME}?parseTime=true&multiStatements=true" up
+                exec goose -dir /app/migrations postgres \
+                  "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable&timezone=UTC" up
               fi
               exec /app/go-user-system migrate up
           env:
