@@ -34,8 +34,8 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 - **Workspace 隔离**：记录、分类、主张、证据、检索、附件与迁移流程按 Workspace 进行服务端隔离。
 - **统一检索**：支持记录、主张、证据、结论、分类、对象和时间等维度检索。
 - **数据迁移**：支持带预检、版本化指纹和事务确认的 Excel 数据迁移，导入包中的可信状态一律安全降级重建。
-- **统一认证**：内置独立的 Go 用户认证与 RBAC 服务，使用 MySQL + Redis。
-- **容器化运行**：Docker Compose 统一编排 Web、PostgreSQL、认证服务、MySQL 和 Redis。
+- **统一认证**：内置独立的 Go 用户认证与 RBAC 服务，使用 PostgreSQL + Redis。
+- **容器化运行**：Docker Compose 统一编排 Web、PostgreSQL（业务与认证两实例）和 Redis。
 - **健康检查与恢复**：提供应用/认证 ready 检查、数据库备份、上传文件备份和隔离恢复验证。
 
 ## 全栈架构
@@ -53,7 +53,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 应用层    Next.js 应用（App Router + Server Action + BFF）  ◄──►  Go 认证服务（JWT / Refresh / RBAC）
         │                                                              │
         ▼                                                              ▼
-数据层    PostgreSQL（业务、主张与证据链）                      MySQL（账号与角色）+ Redis（会话与限流）
+数据层    PostgreSQL（业务、主张与证据链）                      PostgreSQL（账号与角色）+ Redis（会话与限流）
         │
         ▼
 可观测层  Prometheus ──► Grafana ──► Alertmanager ──► 邮件告警
@@ -65,7 +65,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 
 - **前端交互**：App Router 服务端渲染为主，Client Component 只承载局部交互状态；表单与变更经 Server Action 进入 Application Service，依赖方向单向且可静态校验。
 - **后端服务**：业务规则收敛在 13 个 `src/features/*` 域内的 Application Service 层，与框架解耦；认证是**独立部署的 Go 微服务**，不是同进程模块。
-- **数据存储**：PostgreSQL 承载业务、主张与证据链；MySQL 承载账号与角色；Redis 承载会话与限流。22 个版本化迁移只追加不修改。
+- **数据存储**：PostgreSQL 承载业务、主张与证据链以及认证账号与角色；Redis 承载会话与限流。22 个版本化迁移只追加不修改。
 - **容器化可观测**：12 个常驻容器统一编排；指标、日志与主动探测三路采集（应用私有 `/api/metrics` 需 Bearer Token），全部端点仅绑回环、经 SSH 隧道访问。
 
 ## 技术栈
@@ -84,7 +84,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 ### 认证
 
 - Go / Gin / GORM
-- MySQL
+- PostgreSQL（ADR-0019）
 - Redis
 - JWT / Refresh Token / RBAC
 
@@ -182,7 +182,7 @@ Compose 部署
 
 项目已建立并持续运行的实践：
 
-- PostgreSQL / MySQL / Redis / Uploads 四类备份，SHA-256 manifest 校验
+- PostgreSQL（业务与认证）/ Redis / Uploads 备份，SHA-256 manifest 校验
 - 隔离恢复验证（`RESTORE_VERIFY=PASS` 作为进入发布门禁的判据）
 - 加密异地备份通道
 - 定时备份与保留策略（每日窗口执行、至少保留最近 7 份）

@@ -3,8 +3,8 @@ server:
   port: 8082
 postgres:
   host: 127.0.0.1
-  port: "3306"
-  user: root
+  port: "5432"
+  user: go_user_system
   database: go_user_system
   maxOpenConns: 10
   maxIdleConns: 5

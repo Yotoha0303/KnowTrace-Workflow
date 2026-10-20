@@ -54,17 +54,17 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
-      mysql:
-        image: mysql:8.0
+      auth-postgres:
+        # 2026-10-20（ADR-0019 M4 / Issue #52）：认证服务已改走 pgx，MySQL service 替换为 PostgreSQL 18
+        image: postgres:18-alpine
         env:
-          MYSQL_ROOT_PASSWORD: knowtrace-root
-          MYSQL_DATABASE: go_user_system
-          MYSQL_USER: go_user_system
-          MYSQL_PASSWORD: knowtrace
+          POSTGRES_DB: go_user_system
+          POSTGRES_USER: go_user_system
+          POSTGRES_PASSWORD: knowtrace
         ports:
-          - 3306:3306
+          - 5433:5432
         options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pknowtrace-root"
+          --health-cmd "pg_isready -U go_user_system -d go_user_system"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 30
@@ -100,9 +100,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         run: go run ./cmd migrate up
@@ -111,9 +111,9 @@ jobs:
         working-directory: services/go-user-system
         env:
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
         run: |
@@ -136,9 +136,9 @@ jobs:
           APP_ENV: development
           APP_PORT: "8082"
           DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: root
-          DB_PASSWORD: knowtrace-root
+          DB_PORT: "5433"
+          DB_USER: go_user_system
+          DB_PASSWORD: knowtrace
           DB_NAME: go_user_system
           JWT_SECRET: ci_e2e_jwt_secret_at_least_32_characters_long
           REGISTRATION_ENABLED: "false"

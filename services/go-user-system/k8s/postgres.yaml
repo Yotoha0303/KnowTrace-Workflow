@@ -1,0 +1,150 @@
+# postgres.yaml — in-cluster PostgreSQL for go-user-system
+# Service name MUST match configmap postgres.host: go-user-system-postgres
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: go-user-system-postgres-pvc
+  namespace: go-user-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-user-system-postgres-initdb
+  namespace: go-user-system
+data:
+  10-auth-db.sh: |
+    #!/bin/sh
+    set -eu
+    : "${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD 必须传给本容器}"
+    : "${POSTGRES_USER:?}"
+
+    psql --username "$POSTGRES_USER" --dbname postgres \
+         --set=ON_ERROR_STOP=1 --set=pwd="$AUTH_DB_PASSWORD" <<'SQL'
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'go_user_system') THEN
+        CREATE ROLE go_user_system LOGIN;
+      END IF;
+    END
+    $$;
+    SELECT format('ALTER ROLE go_user_system PASSWORD %L', :'pwd') \gexec
+    SELECT 'CREATE DATABASE go_user_system OWNER go_user_system'
+     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'go_user_system') \gexec
+    SQL
+
+    is_super="$(psql --username "$POSTGRES_USER" --dbname postgres -tA \
+      -c "SELECT rolsuper FROM pg_roles WHERE rolname='go_user_system'")"
+    if [ "$is_super" != "f" ]; then
+      echo "FATAL: go_user_system 是超级用户（rolsuper=$is_super）——拒绝继续" >&2
+      exit 1
+    fi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-user-system-postgres
+  namespace: go-user-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-user-system-postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: go-user-system-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              value: auth_admin
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: go-user-system-secret
+                  key: DB_ROOT_PASSWORD
+            - name: AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: go-user-system-secret
+                  key: DB_PASSWORD
+            - name: TZ
+              value: UTC
+            - name: PGTZ
+              value: UTC
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - go_user_system
+                - -d
+                - go_user_system
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - go_user_system
+                - -d
+                - go_user_system
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d/10-auth-db.sh
+              subPath: 10-auth-db.sh
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: go-user-system-postgres-pvc
+        - name: initdb
+          configMap:
+            name: go-user-system-postgres-initdb
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-user-system-postgres
+  namespace: go-user-system
+spec:
+  selector:
+    app: go-user-system-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+  type: ClusterIP

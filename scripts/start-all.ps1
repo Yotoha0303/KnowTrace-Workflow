@@ -18,12 +18,12 @@ try {
       --format "{{.ID}}"
   ) | Where-Object { $_ }
   if ($legacyContainerIds.Count -gt 0) {
-    Write-Output "检测到旧的独立 go-user-system Compose，正在停止容器并保留 MySQL/Redis 数据卷以供统一栈复用。"
+    Write-Output "检测到旧的独立 go-user-system Compose，正在停止容器并保留 Redis 数据卷以供统一栈复用。"
     docker stop $legacyContainerIds | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "无法停止旧的 go-user-system 容器。" }
   }
 
-  foreach ($volumeName in @("go-user-system_mysql_data", "go-user-system_redis_data")) {
+  foreach ($volumeName in @("go-user-system_redis_data")) {
     docker volume inspect $volumeName *> $null
     if ($LASTEXITCODE -ne 0) {
       docker volume create $volumeName | Out-Null

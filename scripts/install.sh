@@ -220,9 +220,10 @@ fi
 
 # ---------------------------------------------------------------------------
 step "外部数据卷"
-# compose.yaml 里这两个卷是 external: true —— Docker 不会替我们建。
+# compose.yaml 里该卷是 external: true —— Docker 不会替我们建。
+# 认证库在 M4 迁至普通具名卷 auth_postgres_data，仅 redis 保持 external 历史卷。
 # bootstrap 的 host 阶段也会建（双保险：这里先建，避免 host 之前就被别的东西挡住）。
-for v in go-user-system_mysql_data go-user-system_redis_data; do
+for v in go-user-system_redis_data; do
   if docker volume inspect "$v" >/dev/null 2>&1; then
     info "已存在：$v"
   else

@@ -70,9 +70,10 @@ echo "==> 宿主机准备（幂等）"
 # ---------------------------------------------------------------------------
 echo
 echo "--- 1/5 外部数据卷 ---"
-# 为什么是 external：这两个卷是 go-user-system 的历史命名，统一栈要复用它们，
+# 为什么是 external：该卷是 go-user-system 的历史命名，统一栈要复用它，
 # 所以 compose.yaml 声明 external: true，Docker 不会替我们创建。
-volumes=(go-user-system_mysql_data go-user-system_redis_data)
+# （认证库在 M4 迁至普通具名卷 auth_postgres_data，不再需要外部 mysql 卷）
+volumes=(go-user-system_redis_data)
 missing_volumes=()
 for volume in "${volumes[@]}"; do
   if docker volume inspect "$volume" >/dev/null 2>&1; then
@@ -88,7 +89,7 @@ if (( ${#missing_volumes[@]} )); then
     ok "已创建卷：$volume"
   done
 else
-  ok "两个数据卷均已存在"
+  ok "外部数据卷已存在"
 fi
 
 # ---------------------------------------------------------------------------

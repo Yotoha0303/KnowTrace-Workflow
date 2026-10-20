@@ -9,9 +9,9 @@ data:
     environment: production
     server:
       port: 8082
-    mysql:
-      host: go-user-system-mysql
-      port: "3306"
+    postgres:
+      host: go-user-system-postgres
+      port: "5432"
       user: go_user_system
       database: go_user_system
       maxOpenConns: 10
@@ -52,8 +52,8 @@ data:
         readHeaderTimeout: 2s
         maxHeaderBytesKib: 128
         timeout: 5s
-  DB_HOST: "go-user-system-mysql"
-  DB_PORT: "3306"
+  DB_HOST: "go-user-system-postgres"
+  DB_PORT: "5432"
   DB_USER: "go_user_system"
   DB_NAME: "go_user_system"
   REGISTRATION_ENABLED: "true"

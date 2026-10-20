@@ -28,7 +28,7 @@ flowchart TB
         APP["knowtrace-app<br/>127.0.0.1:3000<br/>Next.js standalone"]
         AUTH["knowtrace-auth<br/>127.0.0.1:8082<br/>go-user-system (Go)"]
         PG["knowtrace-postgres<br/>127.0.0.1:15432<br/>PostgreSQL 18"]
-        MYSQL["knowtrace-auth-mysql<br/>mysql:8.0"]
+        AUTH_PG["knowtrace-auth-postgres<br/>PostgreSQL 18"]
         REDIS["knowtrace-auth-redis<br/>redis:7.4"]
         PROM["prometheus<br/>127.0.0.1:9090"]
         GRAF["grafana<br/>127.0.0.1:3001"]
@@ -238,7 +238,7 @@ flowchart TB
 
 | 事实 | 实测 | 影响 |
 | --- | --- | --- |
-| 主网络**完全没有分段** | 12 个容器全部只在 `knowtrace_default`；`docker network ls` 只剩 `bridge`/`host`/`none` | 应用容器能直连 `postgres`、`auth-mysql`、`auth-redis`；**新增的 Loki/Alloy 也在同一网段内** |
+| 主网络**完全没有分段** | 12 个容器全部只在 `knowtrace_default`；`docker network ls` 只剩 `bridge`/`host`/`none` | 应用容器能直连 `postgres`、`auth-postgres`、`auth-redis`；**新增的 Loki/Alloy 也在同一网段内** |
 | 认证服务信任整个网段 | `.env` 的 `AUTH_TRUSTED_PROXIES=172.18.0.0/16` | **该网段内任何容器**都能伪造 `X-Forwarded-For`；而 app 又原样转发收到的 XFF，两者叠加即可绕过 **IP 维度**限流 |
 | **但能利用的只有应用容器自身** | 认证服务容器**只接** `knowtrace_default` | 「app 转发伪造 XFF 给 auth」这条路径**到得了**，但前提是 app 已被攻破；账号维度限流（5 次）也仍然生效 |
 

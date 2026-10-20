@@ -33,8 +33,8 @@ The system ships as a **full-stack TypeScript application + an independent Go au
 - Workspace-level server-side data isolation
 - Unified search across records, claims, evidence, conclusions, categories, objects, and timelines
 - Excel data migration with validation and versioned fingerprints; imported "trusted" state is always safely downgraded
-- An independent Go authentication and RBAC microservice using MySQL + Redis
-- Docker Compose orchestration for the application, PostgreSQL, auth service, MySQL, and Redis
+- An independent Go authentication and RBAC microservice using PostgreSQL + Redis
+- Docker Compose orchestration for the application, PostgreSQL (business and auth instances), and Redis
 - Health/readiness checks, database and upload backups, and isolated restore verification
 
 ## Architecture
@@ -52,7 +52,7 @@ Proxy       Nginx (rate limiting, real-IP restoration, edge 404 on metrics)
 Application Next.js (App Router + Server Actions + BFF)  ◄──►  Go auth service (JWT / Refresh / RBAC)
         │                                                             │
         ▼                                                             ▼
-Data        PostgreSQL (business, claims, evidence chain)   MySQL (accounts/roles) + Redis (sessions/limits)
+Data        PostgreSQL (business, claims, evidence chain)   PostgreSQL (accounts/roles) + Redis (sessions/limits)
         │
         ▼
 Observability  Prometheus ──► Grafana ──► Alertmanager ──► Email alerts
@@ -60,7 +60,7 @@ Observability  Prometheus ──► Grafana ──► Alertmanager ──► Ema
                Blackbox Exporter ｜ Node Exporter ｜ structured logs with request IDs
 ```
 
-Four independent layers: **front-end interaction** (server-rendered App Router with client components limited to local interaction state), **back-end services** (business rules confined to Application Services across 13 `src/features/*` domains, decoupled from the framework; authentication is a separately deployed Go microservice), **data storage** (PostgreSQL for business, claims and the evidence chain, MySQL for accounts and roles, Redis for sessions and rate limiting; 22 append-only versioned migrations), and **containerized observability** (12 resident containers, three independent collection paths for metrics, logs, and active probes — the private `/api/metrics` endpoint requires a bearer token — all bound to loopback and reached over SSH tunnels).
+Four independent layers: **front-end interaction** (server-rendered App Router with client components limited to local interaction state), **back-end services** (business rules confined to Application Services across 13 `src/features/*` domains, decoupled from the framework; authentication is a separately deployed Go microservice), **data storage** (PostgreSQL for business, claims and the evidence chain as well as accounts and roles, Redis for sessions and rate limiting; 22 append-only versioned migrations), and **containerized observability** (12 resident containers, three independent collection paths for metrics, logs, and active probes — the private `/api/metrics` endpoint requires a bearer token — all bound to loopback and reached over SSH tunnels).
 
 ## Technology Stack
 
@@ -79,7 +79,7 @@ Four independent layers: **front-end interaction** (server-rendered App Router w
 ### Authentication
 
 - Go / Gin / GORM
-- MySQL
+- PostgreSQL (ADR-0019)
 - Redis
 - JWT / Refresh Token / RBAC
 
@@ -136,7 +136,7 @@ Monitoring, logging, and database endpoints stay bound to `127.0.0.1` and are re
 
 ## Reliability Engineering
 
-The project operates four backup classes (PostgreSQL, MySQL, Redis, uploads) with SHA-256 manifests, isolated restore verification (`RESTORE_VERIFY=PASS` gates releases), an encrypted offsite channel, scheduled backup windows with retention, bounded health and business-read load tests, Blackbox fault drills with recoverable alert-path verification, runbooks, incident/postmortem records, and deployment health checks with rollback gates.
+The project operates backup classes (PostgreSQL business & auth, Redis, uploads) with SHA-256 manifests, isolated restore verification (`RESTORE_VERIFY=PASS` gates releases), an encrypted offsite channel, scheduled backup windows with retention, bounded health and business-read load tests, Blackbox fault drills with recoverable alert-path verification, runbooks, incident/postmortem records, and deployment health checks with rollback gates.
 
 > **Evidence boundary (for reviewers and teams taking over)**: the results above were
 > collected on a **single-region, single-node topology** covering the current sample and

@@ -9,8 +9,8 @@ x-auth-build: &auth-build
     BUILD_TIME: ${AUTH_APP_BUILD_TIME:-unknown}
 
 x-auth-database-environment: &auth-database-environment
-  DB_HOST: auth-mysql
-  DB_PORT: "3306"
+  DB_HOST: auth-postgres
+  DB_PORT: "5432"
   DB_USER: go_user_system
   DB_PASSWORD: ${AUTH_DB_PASSWORD:?Run make init or scripts/start-all.ps1 first}
   DB_NAME: go_user_system
@@ -33,17 +33,23 @@ services:
       retries: 20
     restart: unless-stopped
 
-  auth-mysql:
-    image: mysql:8.0
+  auth-postgres:
+    image: postgres:18-alpine
     environment:
-      MYSQL_ROOT_PASSWORD: ${AUTH_DB_ROOT_PASSWORD:?Run make init or scripts/start-all.ps1 first}
-      MYSQL_DATABASE: go_user_system
-      MYSQL_USER: go_user_system
-      MYSQL_PASSWORD: ${AUTH_DB_PASSWORD:?Run make init or scripts/start-all.ps1 first}
+      POSTGRES_DB: postgres
+      POSTGRES_USER: auth_admin
+      POSTGRES_PASSWORD: ${AUTH_DB_ROOT_PASSWORD:?Run make init or scripts/start-all.ps1 first}
+      # 仅 init 脚本读取，用于给普通角色设口令
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?Run make init or scripts/start-all.ps1 first}
+      # ADR-0019 §5.6 判据 5：时区显式钉住
+      TZ: UTC
+      PGTZ: UTC
     volumes:
-      - auth_mysql_data:/var/lib/mysql
+      - auth_postgres_data:/var/lib/postgresql
+      - ./deploy/postgres-init/auth-db.sh:/docker-entrypoint-initdb.d/10-auth-db.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} || exit 1"]
+      # 探的是**应用库 + 普通角色**：证明「应用能用」而不只是「实例活着」
+      test: ["CMD-SHELL", "pg_isready -U go_user_system -d go_user_system"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -70,7 +76,7 @@ services:
     environment:
       <<: *auth-database-environment
     depends_on:
-      auth-mysql:
+      auth-postgres:
         condition: service_healthy
     restart: "no"
 
@@ -170,9 +176,7 @@ services:
 
 volumes:
   knowtrace_workflow_postgres18:
-  auth_mysql_data:
-    name: go-user-system_mysql_data
-    external: true
+  auth_postgres_data:
   auth_redis_data:
     name: go-user-system_redis_data
     external: true
