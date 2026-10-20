@@ -4,15 +4,26 @@
 
 <p align="center">
   <a href="https://github.com/Yotoha0303/KnowTrace-Workflow/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Yotoha0303/KnowTrace-Workflow/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Yotoha0303/KnowTrace-Workflow/actions/workflows/production-health-check.yml"><img alt="Production Health & Smoke Check" src="https://github.com/Yotoha0303/KnowTrace-Workflow/actions/workflows/production-health-check.yml/badge.svg"></a>
+  <img alt="Next.js 16" src="https://img.shields.io/badge/Next.js-16-black?logo=next.js">
+  <img alt="Go 1.25" src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go">
+  <img alt="PostgreSQL 18" src="https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white">
+  <a href="https://knowtrace-workflow.vercel.app"><img alt="Deployed on Vercel" src="https://img.shields.io/badge/Frontend-Vercel-black?logo=vercel"></a>
+  <a href="https://go-user-system.onrender.com/readyz"><img alt="Auth on Render" src="https://img.shields.io/badge/Auth-Render-46E3B7?logo=render&logoColor=black"></a>
+  <img alt="Database Supabase" src="https://img.shields.io/badge/Database-Supabase-3ECF8E?logo=supabase&logoColor=white">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://github.com/Yotoha0303/KnowTrace-Workflow/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/Yotoha0303/KnowTrace-Workflow"></a>
 </p>
 
-KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追溯”**的知识采集与可靠知识工作流系统。
+> 🚀 **Live Demo 在线体验**：[https://knowtrace-workflow.vercel.app](https://knowtrace-workflow.vercel.app)
+>
+> 体验账号可直接通过登录页注册，或使用内置演示账号浏览。生产环境由 **Vercel**（前端）+ **Render**（Go 认证后端）+ **Supabase**（PostgreSQL 18 云数据库）持续承载并运行自动化巡检。
 
-它首先保存用户的原始记录，再通过 AI 提供分类、摘要、主张候选、证据审查和主题综合等辅助能力。AI 输出与具体记录版本绑定，不能未经人工确认覆盖原始内容；最终结论、独立复核和可靠发布由人完成。
+KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追溯”**的认知溯源与可靠知识管理工作流系统（Cognitive Tracing & Verifiable Knowledge Workflow System）。
 
-系统以**全栈 TypeScript 应用 + 独立 Go 认证服务 + 多引擎数据层 + 容器化可观测体系**交付。部署形态面向**轻量化、资源集约型环境**设计：一台 2 vCPU 规格的服务器即可承载完整业务、认证、监控与日志栈，同时保留向多副本水平扩展的清晰路径。
+它首先保存用户的原始记录，再通过 AI 提供分类、摘要、主张候选、证据审查和主题综合等辅助能力。AI 输出与具体记录版本强绑定，不能未经人工确认覆盖原始内容；最终结论、独立复核和可靠发布始终由人掌控。
+
+系统以**全栈 TypeScript 应用 + 独立 Go 认证微服务 + 多引擎数据层 + 全生命周期可观测体系**交付。支持**云原生生产矩阵（Vercel + Render + Supabase）**与**极简资源集约型自托管（2 vCPU VPS 单机 12 容器编排）**双轨部署形态。
 
 ## 业务痛点
 
@@ -38,7 +49,43 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 - **容器化运行**：Docker Compose 统一编排 Web、PostgreSQL（业务与认证两实例）和 Redis。
 - **健康检查与恢复**：提供应用/认证 ready 检查、数据库备份、上传文件备份和隔离恢复验证。
 
-## 全栈架构
+## 全栈架构与双轨部署拓扑
+
+KnowTrace-Workflow 面向生产设计了**双轨拓扑**：既具备**零服务器运维负担的云原生全托管矩阵**，又具备**低成本私有化的一台 2 vCPU VPS 自托管韧性**。
+
+### 拓扑 A：云原生生产架构（生产在线 Demo）
+
+在线生产环境采用现代 Serverless 与微服务分离架构，天然具备全球分发加速与高可用特性：
+
+```
+浏览器 / 终端客户端
+        │
+        ├─────────────────────────────────────────┐
+        │ (HTTPS 页面交互 / Server Actions)        │ (REST API / JWT 鉴权)
+        ▼                                         ▼
+[Vercel Serverless Platform]           [Render Managed Service]
+Next.js 16 App Router (Node.js/Edge)   Go 认证与 RBAC 微服务 (Gin + GORM)
+React / Tailwind CSS / Dynamic SEO     `/readyz` · 令牌刷新 · 权限状态机
+        │                                         │
+        └──────────────────┬──────────────────────┘
+                           │ (TLS 连接池 / SSL 强加密)
+                           ▼
+               [Supabase Cloud Platform]
+               PostgreSQL 18 托管数据库
+               (主张 · 证据链 · 知识版本 · 账号与角色)
+                           ▲
+                           │ (每 12 小时定时探活巡检)
+               [GitHub Actions Health Probes]
+```
+
+- **前端层（Vercel）**：托管 Next.js 16 App Router，开箱支持 `sitemap.xml` / `robots.txt` 动态 SEO 索引、OpenGraph 社交预览卡片与 Server Actions 流式渲染；
+- **认证微服务（Render）**：Go 语言编写的高性能独立认证服务，提供 `/readyz` 存活探针、双 Token 无感刷新与细粒度 RBAC 拦截；
+- **数据层（Supabase）**：云端托管的 PostgreSQL 18 数据库实例，22 个版本化迁移严格管理；
+- **可观测巡检（GitHub Actions）**：`.github/workflows/production-health-check.yml` 定时巡检四大端点，持续输出 UTC 探活状态报告并防止 Render 免费实例休眠。
+
+### 拓扑 B：单机 VPS 极简全栈自托管（私有化 / 局域网）
+
+针对数据敏感或资源集约场景，仅需一台 2 vCPU / 4GB RAM 的 Linux 云主机即可运行完整业务与可观测栈：
 
 ```
 浏览器 / 原生客户端
@@ -72,7 +119,7 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 
 ### 应用
 
-- Next.js App Router
+- Next.js 16 App Router
 - TypeScript / React / Tailwind CSS
 - PostgreSQL / Drizzle ORM
 - Zod
@@ -90,10 +137,9 @@ KnowTrace-Workflow 是一个**“记录优先、AI 辅助整理、证据可追�
 
 ### 交付与运行
 
-- Linux / Ubuntu
-- Docker / Docker Compose
-- Nginx / Caddy
-- GitHub Actions（4 个门禁 job；镜像在部署侧构建，不经注册表推送）
+- 云原生：Vercel + Render + Supabase
+- 自托管：Linux / Ubuntu / Docker / Docker Compose / Nginx / Caddy
+- GitHub Actions（CI 门禁 + 生产健康定时探活；镜像在部署侧构建，不经注册表推送）
 - Makefile / Shell / Python / Ansible
 - 备份、恢复、SHA-256 完整性校验
 
@@ -132,7 +178,7 @@ Loki ← Alloy ← Caddy / Nginx / Docker Logs
 | 应用层基线 | nginx 前置 **1000 请求 / 并发 20**：成功率 100%、p50 65.8 ms、p95 161.0 ms、p99 542.9 ms | [`docs/15`](docs/15-stage2-vps-reliability.md) §5.4 |
 | 低并发基线 | nginx 前置 **200 请求 / 并发 5**：RPS 211.4、p50 18.3 ms、p95 37.8 ms | 同上 |
 | 资源占用 | 压测峰值 app 内存 154 MB / 限额 1.8 GB、CPU 1.23%，数据库全程 0% | 同上 |
-| CI 门禁 | **4 个 job**：类型检查 + Lint + 单元测试 + 覆盖率采集 + 生产构建 + Go 测试 + 认证前端构建 + 端到端（无认证/有认证各一轮） | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| CI 门禁 | **4 个 job**：类型检查 + Lint + 单元测试 + 覆盖率采集 + 生产构建 + Go 测试 + 认证端到端 + 生产健康探活 | [`.github/workflows/`](.github/workflows/) |
 | 测试资产 | 43 个与被测文件同目录的单元测试、18 个 Playwright 端到端 spec，另有认证服务 26 个 Go 测试文件与独立前端测试 | `git ls-files` |
 | 可观测覆盖 | 12 个抓取目标全 UP、29 条告警规则、告警**投递计数**增量断言 | [`docs/16`](docs/16-stage3-observability.md) |
 | 决策留痕 | **18 条 ADR**（含 superseded 关系）+ 变动前记录机制 | `docs/adr/`、`docs/changes/` |

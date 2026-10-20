@@ -1,0 +1,172 @@
+name: Production Health & Smoke Check
+
+on:
+  schedule:
+    # 每 12 小时定时探活，防止 Render 免费实例长时间休眠，并持续监控线上健康基线
+    - cron: '0 */12 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-health-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  health-check:
+    name: Production Health & Smoke Probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Production Probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "========================================================"
+          echo " Starting KnowTrace-Workflow Production Health Checks"
+          echo " Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "========================================================"
+
+          TOTAL=0
+          PASSED=0
+          FAILED=0
+          TABLE_ROWS=""
+
+          probe_endpoint() {
+            local name="$1"
+            local url="$2"
+            local expected_status="$3"
+            local body_pattern="$4"
+            local max_attempts="${5:-3}"
+            local delay_sec="${6:-5}"
+
+            TOTAL=$((TOTAL + 1))
+            echo ""
+            echo "--------------------------------------------------------"
+            echo "🔍 Testing: [${name}]"
+            echo "   URL: ${url}"
+            echo "   Expected Status: ${expected_status}"
+            [ -n "${body_pattern}" ] && echo "   Body Match Pattern: ${body_pattern}"
+            echo "--------------------------------------------------------"
+
+            local attempt=1
+            local status_code="000"
+            local response_file
+            response_file=$(mktemp)
+
+            while [ "${attempt}" -le "${max_attempts}" ]; do
+              echo "   Attempt ${attempt}/${max_attempts}..."
+              status_code=$(curl -sS -L -w "%{http_code}" -o "${response_file}" \
+                -H "User-Agent: KnowTrace-HealthCheck/1.0" \
+                --connect-timeout 15 \
+                --max-time 30 \
+                "${url}" || echo "000")
+
+              if [ "${status_code}" -eq "${expected_status}" ]; then
+                if [ -n "${body_pattern}" ]; then
+                  if grep -q "${body_pattern}" "${response_file}"; then
+                    echo "   ✅ PASS: HTTP ${status_code} and body matches '${body_pattern}'"
+                    PASSED=$((PASSED + 1))
+                    TABLE_ROWS="${TABLE_ROWS}| ${name} | \`${url}\` | ${expected_status} | \`${status_code}\` | ✅ PASS |\n"
+                    rm -f "${response_file}"
+                    return 0
+                  else
+                    echo "   ⚠️ Status matched (${status_code}), but body did not match pattern '${body_pattern}'"
+                    cat "${response_file}" | head -n 10
+                  fi
+                else
+                  echo "   ✅ PASS: HTTP ${status_code}"
+                  PASSED=$((PASSED + 1))
+                  TABLE_ROWS="${TABLE_ROWS}| ${name} | \`${url}\` | ${expected_status} | \`${status_code}\` | ✅ PASS |\n"
+                  rm -f "${response_file}"
+                  return 0
+                fi
+              else
+                echo "   ⚠️ Attempt ${attempt} returned HTTP ${status_code} (expected ${expected_status})"
+                cat "${response_file}" | head -n 10
+              fi
+
+              attempt=$((attempt + 1))
+              if [ "${attempt}" -le "${max_attempts}" ]; then
+                echo "   Waiting ${delay_sec}s before retry (accommodating cold starts)..."
+                sleep "${delay_sec}"
+              fi
+            done
+
+            echo "   ❌ FAIL: [${name}] failed after ${max_attempts} attempts. Last status: ${status_code}"
+            FAILED=$((FAILED + 1))
+            TABLE_ROWS="${TABLE_ROWS}| ${name} | \`${url}\` | ${expected_status} | \`${status_code}\` | ❌ FAIL |\n"
+            rm -f "${response_file}"
+            return 1
+          }
+
+          # 1. Vercel Web 前端根路径探针
+          probe_endpoint "Vercel Web Root" \
+            "https://knowtrace-workflow.vercel.app/" \
+            200 \
+            "" \
+            3 5 || true
+
+          # 2. Vercel Web 前端登录页探针
+          probe_endpoint "Vercel Web Login" \
+            "https://knowtrace-workflow.vercel.app/login" \
+            200 \
+            "" \
+            3 5 || true
+
+          # 3. Render Go 认证服务就绪探针 (readyz)
+          # Render 免费实例休眠唤醒可能耗时较长，预留最多 5 次重试，每次间隔 10 秒
+          probe_endpoint "Render Auth Service (Readyz)" \
+            "https://go-user-system.onrender.com/readyz" \
+            200 \
+            "ready" \
+            5 10 || true
+
+          # 4. Render Go 认证服务鉴权拦截探针 (users/me 401 拦截)
+          probe_endpoint "Render Auth Interceptor (401 Check)" \
+            "https://go-user-system.onrender.com/api/v1/users/me" \
+            401 \
+            "authorization header is empty" \
+            3 5 || true
+
+          echo ""
+          echo "========================================================"
+          echo " Health Check Summary"
+          echo " Total Probes : ${TOTAL}"
+          echo " Passed       : ${PASSED}"
+          echo " Failed       : ${FAILED}"
+          echo " Timestamp    : $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "========================================================"
+
+          # 写入 GitHub Actions Step Summary
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## 🌐 KnowTrace-Workflow Production Health Probes"
+              echo ""
+              echo "**Check Run UTC**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+              echo "| Probe Target | Target URL | Expected | Actual HTTP | Result |"
+              echo "| --- | --- | --- | --- | --- |"
+              echo -e "${TABLE_ROWS}"
+              echo ""
+              if [ "${FAILED}" -eq 0 ]; then
+                echo "🎉 **All production services are healthy and operational.**"
+              else
+                echo "🚨 **One or more production endpoints are degraded or unreachable.**"
+              fi
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          if [ "${FAILED}" -gt 0 ]; then
+            echo "❌ Error: ${FAILED} health probe(s) failed."
+            exit 1
+          fi
+
+          echo "✅ All health probes passed successfully."

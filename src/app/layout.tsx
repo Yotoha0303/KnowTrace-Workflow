@@ -11,8 +11,43 @@ import { listActorWorkspaces } from "@/features/workspace/service";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "KnowTrace-Workflow", template: "%s · KnowTrace-Workflow" },
-  description: "把散碎输入变成可追溯、可审阅的知识记录。",
+  metadataBase: new URL("https://knowtrace-workflow.vercel.app"),
+  title: {
+    default: "KnowTrace-Workflow · 面向 AI 时代的认知溯源与可审阅知识管理系统",
+    template: "%s · KnowTrace-Workflow",
+  },
+  description:
+    "面向 AI 时代的认知溯源与可审阅知识管理工作流系统。把散碎输入变成可追溯、可审阅的知识记录，支持端到端证据链核验、RBAC 多租户权限与全生命周期工程审计。",
+  keywords: [
+    "KnowTrace",
+    "KnowTrace-Workflow",
+    "认知溯源",
+    "知识管理",
+    "可审阅工作流",
+    "证据链核验",
+    "RBAC 多租户",
+    "工程审计",
+    "AI 知识管理",
+  ],
+  openGraph: {
+    title: "KnowTrace-Workflow · 面向 AI 时代的认知溯源与可审阅知识管理系统",
+    description:
+      "面向 AI 时代的认知溯源与可审阅知识管理工作流系统。把散碎输入变成可追溯、可审阅的知识记录，支持端到端证据链核验、RBAC 多租户权限与全生命周期工程审计。",
+    url: "https://knowtrace-workflow.vercel.app",
+    siteName: "KnowTrace-Workflow",
+    locale: "zh_CN",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "KnowTrace-Workflow · 面向 AI 时代的认知溯源与可审阅知识管理系统",
+    description:
+      "面向 AI 时代的认知溯源与可审阅知识管理工作流系统。把散碎输入变成可追溯、可审阅的知识记录，支持端到端证据链核验、RBAC 多租户权限与全生命周期工程审计。",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default async function RootLayout({
