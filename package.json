@@ -23,6 +23,7 @@
     "@ai-sdk/anthropic": "^4.0.82",
     "@ai-sdk/openai": "^4.0.96",
     "@ai-sdk/openai-compatible": "^3.0.71",
+    "@vercel/blob": "2.8.2",
     "ai": "^7.0.143",
     "drizzle-orm": "^0.45.4",
     "exceljs": "4.4.0",

@@ -23,6 +23,7 @@ ADR 用于记录重要技术决策及其背景，避免以后只知道“用了�
 - [ADR-0017：以 Workspace 为数据边界的应用层隔离模型](0017-workspace-isolation-model.md)
 - [ADR-0018：桌面端外壳的前提与形态选择](0018-desktop-shell-prerequisites.md)
 - [ADR-0019：go-user-system 的存储选型改为 PostgreSQL](0019-auth-db-postgres.md)
+- [ADR-0020：证据图片改用对象存储——客户端直传 Blob、服务端只做提交](0020-evidence-image-object-storage.md)
 
 状态说明：
 
