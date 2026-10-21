@@ -7,7 +7,11 @@ import {
   assertEvidenceImageUploadAllowed,
   commitClientUploadedEvidenceImage,
 } from "@/features/claims/service";
-import { evidenceImageStorageDriver, usesObjectStorage } from "@/features/claims/image-storage";
+import {
+  evidenceImageBlobAccess,
+  evidenceImageStorageDriver,
+  usesObjectStorage,
+} from "@/features/claims/image-storage";
 import {
   EVIDENCE_IMAGE_MIME_TYPES,
   MAX_EVIDENCE_IMAGE_BYTES,
@@ -56,9 +60,20 @@ export async function GET(request: Request) {
     await assertEvidenceImageUploadAllowed(evidenceId);
   } catch (error) {
     const publicError = toPublicError(error);
-    return NextResponse.json({ available: true, driver, ready: false, reason: publicError.message });
+    return NextResponse.json({
+      available: true,
+      driver,
+      access: evidenceImageBlobAccess(),
+      ready: false,
+      reason: publicError.message,
+    });
   }
-  return NextResponse.json({ available: true, driver, ready: true });
+  return NextResponse.json({
+    available: true,
+    driver,
+    access: evidenceImageBlobAccess(),
+    ready: true,
+  });
 }
 
 export async function POST(request: Request) {

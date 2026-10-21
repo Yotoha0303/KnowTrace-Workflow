@@ -371,7 +371,7 @@ function EvidenceItem({
             setMessage(error instanceof Error ? error.message : "图片不符合上传要求。");
             return;
           }
-          await uploadEvidenceImageDirect(evidence.id, file, prepared);
+          await uploadEvidenceImageDirect(evidence.id, file, prepared, probe.access);
           const commit = await commitClientUploadedEvidenceImageAction({
             evidenceId: evidence.id,
             storagePath: prepared.storagePath,

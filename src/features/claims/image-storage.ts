@@ -29,6 +29,11 @@ function blobAccess(): "public" | "private" {
   return "private";
 }
 
+/** 上传令牌签发给浏览器时，浏览器必须使用与存储一致的可见性；由服务端告知，避免两处各写一份。 */
+export function evidenceImageBlobAccess(): "public" | "private" {
+  return blobAccess();
+}
+
 /**
  * 选择存储驱动。
  *
