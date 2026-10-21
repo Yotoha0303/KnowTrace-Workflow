@@ -186,6 +186,10 @@ DEEPSEEK_MODEL
 DEEPSEEK_BASE_URL
 AI_REQUEST_TIMEOUT_MS
 AI_MAX_INPUT_CHARS
+EVIDENCE_IMAGE_STORAGE
+EVIDENCE_IMAGE_BLOB_ACCESS
+BLOB_READ_WRITE_TOKEN
+EVIDENCE_UPLOAD_DIR
 ```
 
 Provider Base URL 使用代码内受控默认值或服务端白名单。浏览器只可为 CC-Switch 模式传入 `localhost`、回环地址或 `host.docker.internal`，服务端规范化为 `/v1`；其他任意 URL 均拒绝。默认跟随模式经 `/v1/messages` 进入 CC-Switch，由它把请求转发给当前供应商；KnowTrace-Workflow 对返回的 JSON 再做应用 Schema 校验。
@@ -217,6 +221,23 @@ Web 层以**无状态单实例应用 + 外置数据层**起步：会话状态、
 避免为简单内部工具增加复杂缓存一致性问题。引入条件的判据见第 6 节（何时迁移到 Worker）。
 
 认证采用仓库内 `services/go-user-system` 的独立运行服务（Go、MySQL、Redis），由根级 Compose/Makefile 统一编排。浏览器只访问 KnowTrace-Workflow 同源 BFF，access/refresh token 都保存在 HttpOnly Cookie；Proxy 执行页面前置门禁，Server Action 和私有图片 Route Handler再独立授权。详细边界见 ADR-0013 与 ADR-0014。
+
+### 8.1 证据图片存储（`ADR-0020`）
+
+图片是**唯一**无法外置到数据库的业务数据，因此单独走存储驱动：
+
+| 驱动 | 适用 | 写入路径 |
+| --- | --- | --- |
+| `local`（默认） | Docker / VPS 单机 | 服务端写 `data/uploads/evidence`（`EVIDENCE_UPLOAD_DIR`） |
+| `vercel-blob` | Vercel 等无状态平台 | 浏览器**直传**对象存储，函数只签发一次性令牌并接收提交 JSON |
+
+**为什么云端必须直传**：Vercel 函数的请求体上限是 **4.5 MB**，而单张图片允许 **10 MB**。
+把字节塞进 Server Action / 普通 Route Handler 的请求体，无论存储驱动换成什么都会 413
+（`FUNCTION_PAYLOAD_TOO_LARGE`）。直传让字节从浏览器直接进存储，函数只处理几 KB 的 JSON。
+
+**证据链的可信度不外包**：提交时服务端从存储**回读字节**，重做魔数与大小校验并由服务端计算
+SHA-256，浏览器声明的 MIME / 大小 / 哈希一律不采信。存储侧使用**私有**可见性，读图仍经
+`/api/evidence-images/:id` 授权后代理返回。选择与取舍见 [`adr/0020`](adr/0020-evidence-image-object-storage.md)。
 
 ## 9. GitHub 项目复用策略
 

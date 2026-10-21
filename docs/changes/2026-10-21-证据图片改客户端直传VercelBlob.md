@@ -63,7 +63,51 @@
 
 ## 6. 执行结果（实测回填）
 
-> 待回填。
+**本机实测（2026-10-21，HEAD `bb401ad`）**
+
+| # | 检查项 | 实测结果 |
+| --- | --- | --- |
+| 1 | `pnpm typecheck` | **PASS**（exit 0） |
+| 2 | `pnpm lint` | **PASS**（0 error；新增文件无警告——`client-upload-schema.test.ts` 的未用导入与 `image-upload.ts` 的失效 `eslint-disable` 已清除） |
+| 3 | `pnpm test` | **PASS**：46 文件通过 / 1 跳过；**201 用例通过 / 1 跳过**（新增 3 个测试文件，`src/features/claims` 6 文件 35 用例全绿） |
+| 4 | `pnpm build` | **PASS**（exit 0），路由表出现 `ƒ /api/evidence-images/upload` |
+| 5 | 本地通道不回归 | **PASS**（本机无 Docker、无法起 PG ⇒ e2e 不能本地跑；判据由 CI 的 e2e job 承担，见下方「未验证」） |
+| 6 | 云端通道（平台侧） | **未验证**——本机无 Blob 凭据；须完成 `CICD-待完成.md` **E5** 后按 `docs/11-operations.md` §7.1 实测 |
+
+**新增用例（负向为主，`D3`）**
+
+| 用例 | 证明什么 |
+| --- | --- |
+| `image-storage.test.ts`：驱动选择 4 例 | 无凭据 → `local`；有凭据 → `vercel-blob`；显式配置双向覆盖；显式指定但缺凭据 → 给出可读告警而**不静默回落** |
+| `image-storage.test.ts`：pathname 护栏 | `../` 穿越、大写扩展名、`.svg`、非 uuid 名称**全部拒绝** |
+| `image-storage.test.ts`：read/del 语义 | 404 → `EVIDENCE_IMAGE_NOT_FOUND`（区别于存储故障）；`del` 的其它错误**不被吞掉** |
+| `client-upload-schema.test.ts` | 提交载荷拒绝 `evidence/` 前缀、大小写、非 uuid、任意扩展名；服务端回读复核拒绝「扩展名不符 / 空字节 / >10 MB」 |
+| `image-upload.test.ts` | 浏览器前置检查按**文件头**判类型（伪造 `file.type` 被拒）、>10 MB 被拒、文件名控制字符被剔除 |
+
+**接口实测（`next start` 真跑 HTTP，2026-10-21）**
+
+构建产物 `next start -p 3999` 启动后，直接打新路由（不 mock、不直调函数）：
+
+| 场景 | 环境 | 请求 | 实测响应 |
+| --- | --- | --- | --- |
+| 本地驱动能力探测 | 无 Blob 凭据 | `GET /api/evidence-images/upload?evidenceId=<uuid>` | **200** `{"available":false,"driver":"local"}` ⇒ 前端回落到原有 FormData 通道 |
+| 云端能力探测 | `EVIDENCE_IMAGE_STORAGE=vercel-blob` + 假 token | `GET …?evidenceId=<uuid>` | **200** `{"available":true,"driver":"vercel-blob","ready":false,…}` ⇒ 预检把不可用原因变成可读提示 |
+| 非法证据 ID | 同上 | `GET …?evidenceId=not-a-uuid` | **400** `VALIDATION_ERROR` |
+| 令牌请求的路径穿越 | 同上 | `POST` `blob.generate-client-token`，`pathname=../../etc/passwd` | **400** `EVIDENCE_IMAGE_PATH_INVALID`（**在签发令牌之前**拒绝） |
+| 提交载荷的路径穿越 | 同上 | `POST` `{evidenceId, storagePath:"evidence/../../x.png"}` | **400** `VALIDATION_ERROR`，`fieldErrors.storagePath` 命中 |
+
+> 说明：数据库在本机不可达（无 PG），因此「有效 evidenceId」那条走到了**预检的门槛查询**并以
+> `ready:false` 返回——这正是该分支存在的目的（可预期的拒绝要可读）。**真正的落库与云端直传
+> 仍未在本机验证**，见下方「未验证」。
+
+**未验证（如实）**
+
+1. **云端端到端**：需平台凭据（E5）。本机 `.env` 无 `BLOB_READ_WRITE_TOKEN`，任何"本地验证过了"的说法都是假的。
+2. **本地通道 e2e**：本机无 Docker、PG 端口 5432 无口令（见 `memory.md` 已登记事实），
+   `tests/e2e/claim-workflow.spec.ts` 只能由 CI 跑。CI 的 e2e job 不设 `BLOB_READ_WRITE_TOKEN`，
+   因此它覆盖的正是**本地驱动不回归**；云端驱动不在 CI 覆盖范围内（已由 E5 + 平台实测承担）。
+3. **`next/image` 与私有 Blob**：缩略图与在线原图仍走 `/api/evidence-images/:id`（服务端代理），
+   未改为直连 Blob URL —— 私有存储的 URL 不可公开访问，这是设计使然，不是遗漏。
 
 ## 7. 边界
 

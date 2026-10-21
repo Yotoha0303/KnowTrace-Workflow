@@ -90,6 +90,11 @@ docker compose logs --tail=100 app
 
 ## 7. 证据图片目录属主
 
+> **先看驱动**（`ADR-0020`）：`EVIDENCE_IMAGE_STORAGE=vercel-blob` 或环境中存在
+> `BLOB_READ_WRITE_TOKEN` 时，图片写入**对象存储**、不落本地磁盘，**本节整节不适用**——
+> 此时启动自检只检查 Blob 凭据是否在场，不再探测本地目录。下面所有内容只对**本地驱动**
+> （Docker / VPS 单机，默认）成立。
+
 `compose.yaml` 把 `./data/uploads` 绑定挂载到 `/app/data/uploads`，**这会盖掉 Dockerfile 中 `chown -R nextjs:nodejs /app/data` 的结果**。宿主机首次 `docker compose up` 时该目录由 root 创建，而容器内进程是 `uid=1001(nextjs) gid=65533(nogroup)`，于是 `writeEvidenceImage` 的 `writeFile(..., {flag:"wx"})` 每次都抛 `EACCES`，图片上传完全不可用。
 
 这个故障在 2026-09-13 与 09-19 静默发生了 42 次（只在图片上传请求层表现为「上传失败」），2026-09-30 定位并修复。
@@ -103,6 +108,22 @@ sudo PROJECT_DIR=/opt/knowtrace bash scripts/linux/fix-uploads-ownership.sh
 脚本幂等，属主正确时不产生变更，并会以目标 uid 真实写入一个探测文件确认；成功输出 `UPLOADS_OWNERSHIP=PASS`。
 
 应用启动时也会自检该目录：不可写会打印带修复命令的显式告警（见 `src/server/startup-checks.ts`），不会再静默失败。
+
+### 7.1 云端部署（Vercel 等无状态平台）
+
+容器文件系统只读、且实例重启/重新部署即清空，因此**不能**用本地驱动。切换方式：
+
+1. 在 Vercel 项目的 Storage 中创建 **Private** Blob 存储并连接到项目
+   （项目环境变量会自动获得 `BLOB_READ_WRITE_TOKEN`）。
+2. 确认 `EVIDENCE_IMAGE_STORAGE` 为空（留空即按凭据自动选择 `vercel-blob`）或显式设为 `vercel-blob`；
+   `EVIDENCE_IMAGE_BLOB_ACCESS` 保持 `private`——证据图片是用户隐私数据。
+3. 部署后触发一次上传：浏览器应出现一次**直传**（对象存储域名），随后页面刷新出缩略图。
+4. **判据（可证伪）**：上传一张 **>4.5 MB** 的图片。旧实现必败（平台 413
+   `FUNCTION_PAYLOAD_TOO_LARGE`），新实现应成功——这正是「只换存储驱动」与「直传」的分水岭。
+
+排查线索：启动日志出现「缺少 `BLOB_READ_WRITE_TOKEN`」= 存储未连接；
+上传报「Failed to retrieve the client token」= 签发令牌被拒（多数是证据状态/数量门槛，见 `/api/evidence-images/upload` 的 GET 预检）。
+本项外部动作见 `CICD-待完成.md` 的 **E5**。
 
 ## 8. 本节之外：运维总入口
 

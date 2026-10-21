@@ -175,6 +175,22 @@ type AuditClaimInput = {
 
 通过 `FormData` 输入 Evidence ID 与图片。仅允许调查中且未审核的 Evidence；支持 JPEG、PNG、WebP、GIF，校验声明 MIME 与文件头，单张最多 10 MB、每条 Evidence 最多 5 张。文件落在项目上传目录，数据库保存相对路径和 SHA-256；成功后通过 `/api/evidence-images/:id` 在线读取。上传成功不代表人工核验通过，不改变 Evidence 审核状态；如果当前核验方式是 `manual_attachment`，新增图片会重置核验投影。
 
+> **云端部署的上传通道不同**（`ADR-0020` / `ISSUE-S3-024`）：Vercel 函数的请求体上限是
+> **4.5 MB**，`FormData` 通道因此只能处理本地 / 自建部署。云端由 `GET /api/evidence-images/upload`
+> 回答 `{available:true}`，浏览器改用直传两跳：① `POST /api/evidence-images/upload`
+> （body `{type:"blob.generate-client-token",…}`）签发一次性令牌，② 字节直传对象存储，
+> ③ `PUT`-等价提交 `{evidenceId, storagePath, originalName?}`（普通 JSON，走同一路由的 POST）。
+> 提交时服务端**从存储回读字节**，重验魔数与大小、由服务端计算 SHA-256 后落库；
+> 判定门槛（证据状态、每证据 5 张上限）与 `FormData` 通道共用同一段代码。
+
+### commitClientUploadedEvidenceImage
+
+直传完成后的提交（Server Action `commitClientUploadedEvidenceImageAction`，或
+`POST /api/evidence-images/upload` 的 JSON 分支）。输入 `evidenceId`、`storagePath`
+（仅接受 `<uuid>.<jpg|png|webp|gif>`，拒绝任意对象 key 与目录穿越）与可选 `originalName`。
+存储读取失败 → `EVIDENCE_IMAGE_UPLOAD_NOT_FOUND`；字节与扩展名不符 → `EVIDENCE_IMAGE_TYPE_INVALID`；
+落库失败时删除刚上传的对象，避免孤儿。
+
 ### reviewClaimEvidence
 
 输入 Evidence ID 与 `accepted/rejected` 决定。只允许在所属 Claim 调查中处理未审核 Evidence，决定不可覆盖。`accepted` 还要求当前网页检查或附件人工核验成功、摘录匹配且检查快照未被并发替换；`rejected` 不要求核验。
