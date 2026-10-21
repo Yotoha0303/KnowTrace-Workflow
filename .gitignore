@@ -48,6 +48,10 @@ client_secret_*.json
 # （见 docs/日常运维/部署清单与验收.md 第 5.1 条）。属产物，不入库。
 scripts/ops/reports/
 
+# 部署生产资料与面试材料（用户本地私有资产，不提交远程）
+production-assets/
+
+
 # Go 集成测的服务端见证基线（scripts/check-go-integration-server-witness.mjs --prepare 的产物）。
 # CI 里由 prepare 步现场写、判定步现场读，同一 job 内有效；本机跑同样会落一份。属运行态产物，不入库。
 .go-integration-witness-baseline.json
