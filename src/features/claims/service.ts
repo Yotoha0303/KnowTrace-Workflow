@@ -460,7 +460,14 @@ async function storeEvidenceImage(input: EvidenceImageMetadata & { persist: () =
           byteSize: input.byteSize,
           sha256: input.sha256,
         })
-        .returning({ id: evidenceAttachments.id });
+        .returning({ id: evidenceAttachments.id })
+        .onConflictDoNothing({ target: evidenceAttachments.storagePath });
+      if (!attachment) {
+        // 同一个 storagePath 已经被一条记录引用 ⇒ 这是一次**重复提交**（双击、网络重试、
+        // 直传后刷新再提交）。此时对象已被既有记录合法引用，**绝不能**走下面的补偿删除，
+        // 否则会把别人正在用的图片删掉。按已提交处理即可。
+        return { id: null, captureId: current.captureId, duplicate: true };
+      }
       if (current.latestSourceCheckId) {
         const [latestCheck] = await transaction
           .select({ verificationMethod: evidenceSourceChecks.verificationMethod })

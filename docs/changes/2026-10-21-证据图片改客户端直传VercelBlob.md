@@ -81,6 +81,7 @@
 | `image-storage.test.ts`：驱动选择 4 例 | 无凭据 → `local`；有凭据 → `vercel-blob`；显式配置双向覆盖；显式指定但缺凭据 → 给出可读告警而**不静默回落** |
 | `image-storage.test.ts`：pathname 护栏 | `../` 穿越、大写扩展名、`.svg`、非 uuid 名称**全部拒绝** |
 | `image-storage.test.ts`：read/del 语义 | 404 → `EVIDENCE_IMAGE_NOT_FOUND`（区别于存储故障）；`del` 的其它错误**不被吞掉** |
+| （实现中发现的竞态，已修） | 直传的 `storagePath` 由浏览器生成，重复提交会命中 `evidence_attachments_storage_path_uq`；**失败分支的补偿删除会删掉第一次已落库所引用的对象**。已加守卫：`onConflictDoNothing` 后若无返回行即判为重复提交、**不删对象** |
 | `client-upload-schema.test.ts` | 提交载荷拒绝 `evidence/` 前缀、大小写、非 uuid、任意扩展名；服务端回读复核拒绝「扩展名不符 / 空字节 / >10 MB」 |
 | `image-upload.test.ts` | 浏览器前置检查按**文件头**判类型（伪造 `file.type` 被拒）、>10 MB 被拒、文件名控制字符被剔除 |
 
