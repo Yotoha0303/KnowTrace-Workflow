@@ -57,10 +57,11 @@ function assertEvidenceImageState(claimStatus: string, reviewStatus: string) {
  * 直传前的**预检**：让浏览器在把字节传到对象存储之前就拿到明确拒绝，
  * 而不是传完才在提交时失败（那会留下一个孤儿 blob）。
  *
- * 真正的权威判据仍在 `storeEvidenceImage` 的事务里（带行锁、与并发一致）；
- * 本函数只是把同一套条件提前跑一遍，两处共用 `assertEvidenceImageState` 与数量上限常量。
+ * 权限（`requireEvidenceAccess`，与本地 FormData 通道同一个判据）与状态/数量门槛
+ * 都在这里判一遍；权威判据仍在提交事务里（带行锁、与并发一致）。
  */
 export async function assertEvidenceImageUploadAllowed(evidenceId: string): Promise<void> {
+  await requireEvidenceAccess(evidenceId);
   const [row] = await db
     .select({
       id: claimEvidence.id,

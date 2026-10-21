@@ -59,6 +59,8 @@ export async function GET(request: Request) {
   try {
     await assertEvidenceImageUploadAllowed(evidenceId);
   } catch (error) {
+    // 预检只是**提示**：真正的权限与门槛判定在下面（签发令牌 / 提交）的同一函数里，
+    // 并由它抛错。这里把可读原因一并返回，避免客户端只看到通用的令牌失败。
     const publicError = toPublicError(error);
     return NextResponse.json({
       available: true,
