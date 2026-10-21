@@ -4,22 +4,36 @@ import { constants } from "node:fs";
 import { access, mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
-import { evidenceUploadRoot } from "@/features/claims/image-storage";
+import {
+  evidenceUploadRoot,
+  objectStorageCredentialWarning,
+  usesObjectStorage,
+} from "@/features/claims/image-storage";
 
 /**
- * 检查证据图片目录真的可写，不可写就大声报错。
+ * 检查证据图片的存储真的可用，不可用就大声报错。
  *
- * 背景：`compose.yaml` 把 `./data/uploads` 作为绑定挂载覆盖 `/app/data/uploads`，
- * 会盖掉 Dockerfile 里 `chown -R nextjs:nodejs /app/data` 的结果。宿主机首次
- * `docker compose up` 时该目录由 root 创建，容器内进程是 uid 1001，于是每次
- * `writeFile(..., {flag:"wx"})` 都抛 EACCES。
+ * 两条驱动、两种判据：
  *
- * 这个故障曾经静默发生了 42 次（2026-09-13 38 次、09-19 4 次），因为写入失败
- * 只反映在图片上传的请求里。这里把它变成启动时的一次显式检查。
+ * 1. **本地磁盘（默认）**：`compose.yaml` 把 `./data/uploads` 作为绑定挂载覆盖
+ *    `/app/data/uploads`，会盖掉 Dockerfile 里 `chown -R nextjs:nodejs /app/data` 的结果。
+ *    宿主机首次 `docker compose up` 时该目录由 root 创建，容器内进程是 uid 1001，于是每次
+ *    `writeFile(..., {flag:"wx"})` 都抛 EACCES。这个故障曾经静默发生了 42 次
+ *    （2026-09-13 38 次、09-19 4 次），因为写入失败只反映在图片上传的请求里。
  *
- * pid 1 和 Next.js 都跑在 uid 1001 下，所以这里探测的结果就是真实写入能力。
+ * 2. **对象存储（Vercel Blob）**：容器文件系统不可写是**预期**的，此时再探测本地目录只会
+ *    产生一条误导性的告警（`ISSUE-S3-024` 的现场就是这样）。改为检查凭据是否在场，
+ *    并说明缺什么、去哪里补。
+ *
+ * pid 1 和 Next.js 都跑在 uid 1001 下，所以本地探测的结果就是真实写入能力。
  */
 export async function assertUploadDirectoryWritable(): Promise<void> {
+  if (usesObjectStorage()) {
+    const warning = objectStorageCredentialWarning();
+    if (warning) console.error(warning);
+    return;
+  }
+
   const root = evidenceUploadRoot();
 
   try {

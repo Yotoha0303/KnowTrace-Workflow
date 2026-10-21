@@ -5,6 +5,9 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
     serverActions: {
+      // 这条只覆盖**本地 / 自建部署**的 FormData 上传通道（单张最大 10 MB）。
+      // ⚠️ 它**改不了 Vercel 平台**的函数请求体上限（4.5 MB）——云端部署走浏览器直传
+      // 对象存储，见 ADR-0020 与 src/app/api/evidence-images/upload/route.ts。
       bodySizeLimit: "12mb",
     },
   },

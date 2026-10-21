@@ -1,24 +1,139 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { prepareEvidenceImage } from "./image-validation";
+vi.mock("@vercel/blob", () => ({
+  put: vi.fn(),
+  get: vi.fn(),
+  del: vi.fn(),
+  BlobError: class BlobError extends Error {},
+}));
 
-describe("evidence image storage validation", () => {
-  it("uses the detected image format and creates a hash", async () => {
-    const file = new File(
-      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
-      "screen.png",
-      { type: "image/png" },
-    );
-    const prepared = await prepareEvidenceImage(file);
-    expect(prepared.mimeType).toBe("image/png");
-    expect(prepared.storagePath).toMatch(/^[0-9a-f-]+\.png$/);
-    expect(prepared.sha256).toMatch(/^[0-9a-f]{64}$/);
+const blob = await import("@vercel/blob");
+const {
+  evidenceImageBlobPathname,
+  evidenceImageStorageDriver,
+  objectStorageCredentialWarning,
+  readEvidenceImage,
+  removeEvidenceImage,
+  usesObjectStorage,
+  writeEvidenceImage,
+} = await import("./image-storage");
+
+const UUID_PNG = "0f1e2d3c-4b5a-4968-8776-655443322110.png";
+const UUID_JPG = "0f1e2d3c-4b5a-4968-8776-655443322110.jpg";
+
+const PNG_HEADER = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+afterEach(() => {
+  delete process.env.EVIDENCE_IMAGE_STORAGE;
+  delete process.env.EVIDENCE_IMAGE_BLOB_ACCESS;
+  delete process.env.BLOB_READ_WRITE_TOKEN;
+  vi.mocked(blob.put).mockReset();
+  vi.mocked(blob.get).mockReset();
+  vi.mocked(blob.del).mockReset();
+});
+
+describe("证据图片存储驱动选择", () => {
+  it("没有 Blob 凭据时回落本地磁盘", () => {
+    expect(evidenceImageStorageDriver()).toBe("local");
+    expect(usesObjectStorage()).toBe(false);
+    expect(objectStorageCredentialWarning()).toBeNull();
   });
 
-  it("rejects a forged MIME declaration", async () => {
-    const file = new File(["plain text"], "fake.png", { type: "image/png" });
-    await expect(prepareEvidenceImage(file)).rejects.toMatchObject({
-      code: "EVIDENCE_IMAGE_TYPE_INVALID",
+  it("Vercel 上自动注入 BLOB_READ_WRITE_TOKEN 后走对象存储", () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    expect(evidenceImageStorageDriver()).toBe("vercel-blob");
+    expect(usesObjectStorage()).toBe(true);
+    // 有凭据时不产生告警
+    expect(objectStorageCredentialWarning()).toBeNull();
+  });
+
+  it("显式配置优先于凭据推断（两个方向都要能覆盖）", () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    process.env.EVIDENCE_IMAGE_STORAGE = "local";
+    expect(evidenceImageStorageDriver()).toBe("local");
+
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    process.env.EVIDENCE_IMAGE_STORAGE = "vercel-blob";
+    expect(evidenceImageStorageDriver()).toBe("vercel-blob");
+  });
+
+  it("显式要求对象存储但缺凭据时给出可读告警，而不是静默回落", () => {
+    process.env.EVIDENCE_IMAGE_STORAGE = "vercel-blob";
+    expect(evidenceImageStorageDriver()).toBe("vercel-blob");
+    expect(objectStorageCredentialWarning()).toContain("BLOB_READ_WRITE_TOKEN");
+  });
+});
+
+describe("Blob pathname 映射（护栏）", () => {
+  it("把数据库里的 storage_path 映射到 evidence/ 前缀", () => {
+    expect(evidenceImageBlobPathname(UUID_PNG)).toBe(`evidence/${UUID_PNG}`);
+  });
+
+  it("拒绝目录穿越、非法扩展名与非 uuid 名称", () => {
+    for (const invalid of [
+      `evidence/../${UUID_PNG}`,
+      `${UUID_PNG.toUpperCase()}`,
+      "0f1e2d3c-4b5a-4968-8776-655443322110.svg",
+      "screenshot.png",
+      "",
+    ]) {
+      expect(() => evidenceImageBlobPathname(invalid)).toThrowError(
+        expect.objectContaining({ code: "EVIDENCE_IMAGE_PATH_INVALID" }),
+      );
+    }
+  });
+});
+
+describe("对象存储驱动上的读写删", () => {
+  it("写入时按扩展名给出 content-type，且不加随机后缀、不允许覆盖", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    await writeEvidenceImage(UUID_PNG, PNG_HEADER);
+    expect(vi.mocked(blob.put)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(blob.put).mock.calls[0][0]).toBe(`evidence/${UUID_PNG}`);
+    expect(vi.mocked(blob.put).mock.calls[0][2]).toMatchObject({
+      access: "private",
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      contentType: "image/png",
     });
+  });
+
+  it("读回字节；404 翻译成「图片不存在」而不是存储故障", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    const body = new Blob([PNG_HEADER]);
+    vi.mocked(blob.get).mockResolvedValue({
+      statusCode: 200,
+      stream: body.stream(),
+      headers: new Headers(),
+      blob: {
+        url: "https://store.private.blob.vercel-storage.com/evidence/x.png",
+        downloadUrl: "https://store.private.blob.vercel-storage.com/evidence/x.png",
+        pathname: `evidence/${UUID_PNG}`,
+        contentType: "image/png",
+        contentDisposition: "inline",
+        cacheControl: "private",
+        uploadedAt: new Date(),
+        etag: "etag",
+        size: PNG_HEADER.byteLength,
+      },
+    });
+    const bytes = await readEvidenceImage(UUID_PNG);
+    expect(Array.from(bytes)).toEqual(Array.from(PNG_HEADER));
+
+    vi.mocked(blob.get).mockRejectedValue(
+      new blob.BlobError("Failed to fetch blob: 404 Not Found"),
+    );
+    await expect(readEvidenceImage(UUID_PNG)).rejects.toMatchObject({
+      code: "EVIDENCE_IMAGE_NOT_FOUND",
+    });
+  });
+
+  it("删除走 del；不吞掉其它错误", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    await removeEvidenceImage(UUID_JPG);
+    expect(vi.mocked(blob.del)).toHaveBeenCalledWith(`evidence/${UUID_JPG}`);
+
+    vi.mocked(blob.del).mockRejectedValue(new Error("network down"));
+    await expect(removeEvidenceImage(UUID_JPG)).rejects.toThrow("network down");
   });
 });

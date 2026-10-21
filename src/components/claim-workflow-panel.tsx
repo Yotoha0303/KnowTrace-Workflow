@@ -28,6 +28,7 @@ import { useRouter } from "next/navigation";
 import {
   addClaimEvidenceAction,
   checkClaimEvidenceSourceAction,
+  commitClientUploadedEvidenceImageAction,
   concludeClaimAction,
   createManualClaimAction,
   reviewClaimEvidenceAction,
@@ -35,6 +36,11 @@ import {
   updateClaimEvidenceAction,
   uploadEvidenceImageAction,
 } from "@/app/actions";
+import {
+  prepareClientEvidenceImage,
+  probeEvidenceImageUpload,
+  uploadEvidenceImageDirect,
+} from "@/features/claims/image-upload";
 import type { ClaimDTO } from "@/features/capture/queries";
 
 const statusLabels = {
@@ -348,6 +354,42 @@ function EvidenceItem({
     startTransition(async () => {
       setUploading(true);
       try {
+        // 云端部署：字节从浏览器**直传对象存储**再提交（Vercel 函数请求体上限 4.5 MB，
+        // 而单张图片允许 10 MB，走 FormData 必被平台拒绝 —— 见 ISSUE-S3-024 / ADR-0020）。
+        // 本地单机部署：探测结果为 form-action，沿用原来的 FormData 通道，行为不变。
+        const probe = await probeEvidenceImageUpload(evidence.id);
+        if (probe.mode === "direct" && !probe.ready) {
+          setMessage(probe.reason);
+          return;
+        }
+
+        if (probe.mode === "direct") {
+          let prepared;
+          try {
+            prepared = await prepareClientEvidenceImage(file);
+          } catch (error) {
+            setMessage(error instanceof Error ? error.message : "图片不符合上传要求。");
+            return;
+          }
+          await uploadEvidenceImageDirect(evidence.id, file, prepared);
+          const commit = await commitClientUploadedEvidenceImageAction({
+            evidenceId: evidence.id,
+            storagePath: prepared.storagePath,
+            originalName: prepared.originalName,
+          });
+          if (!commit.ok) {
+            setMessage(
+              commit.error.fieldErrors
+                ? Object.values(commit.error.fieldErrors).flat()[0] ?? commit.error.message
+                : commit.error.message,
+            );
+            return;
+          }
+          setFile(null);
+          router.refresh();
+          return;
+        }
+
         const formData = new FormData();
         formData.set("evidenceId", evidence.id);
         formData.set("file", file);
@@ -361,6 +403,9 @@ function EvidenceItem({
           return; // 失败不刷新；finally 会清掉 uploading
         }
         setFile(null);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "图片上传失败，请稍后重试。");
+        return;
       } finally {
         setUploading(false);
       }

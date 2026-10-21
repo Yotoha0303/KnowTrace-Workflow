@@ -102,6 +102,25 @@ export const uploadEvidenceImageSchema = z.object({
     ),
 });
 
+/**
+ * 客户端直传（Vercel Blob）后的提交载荷。
+ *
+ * 这里**只校验形状**：`storagePath` 必须是服务端可识别的 `<uuid>.<ext>`，防止浏览器
+ * 提交任意对象 key；字节本身的格式与哈希由服务端回读后重新判定（见
+ * `commitClientUploadedEvidenceImage`），不采信客户端声明的 MIME / 大小 / 哈希。
+ */
+export const commitClientUploadedEvidenceImageSchema = z.object({
+  evidenceId: z.uuid(),
+  storagePath: z
+    .string()
+    .max(255)
+    .regex(
+      /^[0-9a-f-]+\.(?:jpg|png|webp|gif)$/,
+      "图片存储路径无效。",
+    ),
+  originalName: z.string().max(255).optional(),
+});
+
 export const reviewClaimEvidenceSchema = z.object({
   evidenceId: z.uuid(),
   decision: z.enum(["accepted", "rejected"]),

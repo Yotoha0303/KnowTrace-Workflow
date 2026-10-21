@@ -50,6 +50,7 @@ import {
 import {
   addClaimEvidenceSchema,
   checkClaimEvidenceSourceSchema,
+  commitClientUploadedEvidenceImageSchema,
   concludeClaimSchema,
   createManualClaimSchema,
   reviewClaimEvidenceSchema,
@@ -60,6 +61,7 @@ import {
 import {
   addClaimEvidence,
   checkClaimEvidenceSource,
+  commitClientUploadedEvidenceImage,
   concludeClaim,
   createManualClaim,
   reviewClaimEvidence,
@@ -319,6 +321,22 @@ export async function uploadEvidenceImageAction(formData: FormData) {
       file: formData.get("file"),
     },
     uploadEvidenceImage,
+  );
+  if (result.ok) revalidatePath(`/captures/${result.data.captureId}`);
+  return result;
+}
+
+/**
+ * 客户端直传后的提交（云端部署）。
+ *
+ * 字节已经由浏览器直接送进对象存储；这里只接收很小的 JSON，并在服务端回读字节复核，
+ * 因此既绕开了 Vercel 4.5 MB 的请求体上限，也不把证据链的可信度外包给浏览器。
+ */
+export async function commitClientUploadedEvidenceImageAction(raw: unknown) {
+  const result = await runAction(
+    commitClientUploadedEvidenceImageSchema,
+    raw,
+    commitClientUploadedEvidenceImage,
   );
   if (result.ok) revalidatePath(`/captures/${result.data.captureId}`);
   return result;

@@ -1,4 +1,5 @@
 import { and, count, desc, eq } from "drizzle-orm";
+import path from "node:path";
 
 import type { ClaimStatus } from "./schema";
 import {
@@ -23,10 +24,15 @@ import { AppError } from "@/shared/errors/app-error";
 import { sha256, stableStringify } from "@/shared/hash";
 import { inspectEvidenceSource } from "./source-inspector";
 import {
+  readEvidenceImage,
   removeEvidenceImage,
   writeEvidenceImage,
 } from "./image-storage";
-import { MAX_EVIDENCE_IMAGES, prepareEvidenceImage } from "./image-validation";
+import {
+  MAX_EVIDENCE_IMAGES,
+  prepareEvidenceImage,
+  verifyStoredEvidenceImageBytes,
+} from "./image-validation";
 import {
   requireCaptureAccess,
   requireClaimAccess,
@@ -37,6 +43,47 @@ const MANUAL_ATTACHMENT_CONTENT_TYPE =
   "application/vnd.knowtrace.evidence-attachments+json";
 const MANUAL_ATTACHMENT_VERIFICATION_NOTE =
   "本地使用者确认已查看本次冻结的全部图片附件，并确认保存的证据摘录与附件内容一致。";
+
+function assertEvidenceImageState(claimStatus: string, reviewStatus: string) {
+  if (claimStatus !== "investigating" || reviewStatus !== "unreviewed") {
+    throw new AppError(
+      "CLAIM_EVIDENCE_IMAGE_STATE_INVALID",
+      "只有调查中且尚未审核的证据可以上传图片。",
+    );
+  }
+}
+
+/**
+ * 直传前的**预检**：让浏览器在把字节传到对象存储之前就拿到明确拒绝，
+ * 而不是传完才在提交时失败（那会留下一个孤儿 blob）。
+ *
+ * 真正的权威判据仍在 `storeEvidenceImage` 的事务里（带行锁、与并发一致）；
+ * 本函数只是把同一套条件提前跑一遍，两处共用 `assertEvidenceImageState` 与数量上限常量。
+ */
+export async function assertEvidenceImageUploadAllowed(evidenceId: string): Promise<void> {
+  const [row] = await db
+    .select({
+      id: claimEvidence.id,
+      claimStatus: claims.status,
+      reviewStatus: claimEvidence.reviewStatus,
+    })
+    .from(claimEvidence)
+    .innerJoin(claims, eq(claimEvidence.claimId, claims.id))
+    .where(eq(claimEvidence.id, evidenceId))
+    .limit(1);
+  if (!row) throw new AppError("CLAIM_EVIDENCE_NOT_FOUND", "证据不存在。");
+  assertEvidenceImageState(row.claimStatus, row.reviewStatus);
+  const [attachmentCount] = await db
+    .select({ count: count() })
+    .from(evidenceAttachments)
+    .where(eq(evidenceAttachments.evidenceId, row.id));
+  if (Number(attachmentCount?.count ?? 0) >= MAX_EVIDENCE_IMAGES) {
+    throw new AppError(
+      "CLAIM_EVIDENCE_IMAGE_LIMIT",
+      `每条证据最多上传 ${MAX_EVIDENCE_IMAGES} 张图片。`,
+    );
+  }
+}
 
 export async function createManualClaim(input: {
   captureId: string;
@@ -310,6 +357,67 @@ export async function uploadEvidenceImage(input: {
 }) {
   await requireEvidenceAccess(input.evidenceId);
   const prepared = await prepareEvidenceImage(input.file);
+  return storeEvidenceImage({
+    evidenceId: input.evidenceId,
+    storagePath: prepared.storagePath,
+    originalName: prepared.originalName,
+    mimeType: prepared.mimeType,
+    byteSize: prepared.byteSize,
+    sha256: prepared.sha256,
+    persist: () =>
+      writeEvidenceImage(prepared.storagePath, prepared.bytes, {
+        contentType: prepared.mimeType,
+      }),
+  });
+}
+
+/**
+ * 客户端直传（Vercel Blob）后的提交。
+ *
+ * 字节已经在浏览器 → 对象存储这一跳落盘，本函数**不信浏览器声明的任何元数据**：
+ * 从存储把字节读回来，重做魔数/大小校验，并由服务端计算 SHA-256。
+ * 校验或落库失败时删除刚上传的 blob，避免留下孤儿。
+ */
+export async function commitClientUploadedEvidenceImage(input: {
+  evidenceId: string;
+  storagePath: string;
+  originalName?: string;
+}) {
+  await requireEvidenceAccess(input.evidenceId);
+  const storagePath = input.storagePath;
+  const bytes = await readEvidenceImage(storagePath).catch(() => null);
+  if (!bytes) {
+    throw new AppError("EVIDENCE_IMAGE_UPLOAD_NOT_FOUND", "未找到刚上传的图片，请重新上传。");
+  }
+  const verified = verifyStoredEvidenceImageBytes(bytes, storagePath);
+  const originalName =
+    path.basename(input.originalName ?? "").replace(/[ -]/g, "").slice(0, 255) ||
+    `image${path.extname(storagePath).toLowerCase()}`;
+  return storeEvidenceImage({
+    evidenceId: input.evidenceId,
+    storagePath,
+    originalName,
+    mimeType: verified.mimeType,
+    byteSize: verified.byteSize,
+    sha256: verified.sha256,
+    persist: async () => undefined,
+  });
+}
+
+type EvidenceImageMetadata = {
+  evidenceId: string;
+  storagePath: string;
+  originalName: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+};
+
+/**
+ * 两种上传入口（FormData / 客户端直传）共用的落库事务：状态与数量门槛只在这里判一次，
+ * 避免两条路径各写一套判据、日后只改了一边。
+ */
+async function storeEvidenceImage(input: EvidenceImageMetadata & { persist: () => Promise<void> }) {
   let stored = false;
   try {
     return await db.transaction(async (transaction) => {
@@ -328,12 +436,7 @@ export async function uploadEvidenceImage(input: {
         .limit(1)
         .for("update");
       if (!current) throw new AppError("CLAIM_EVIDENCE_NOT_FOUND", "证据不存在。");
-      if (current.claimStatus !== "investigating" || current.reviewStatus !== "unreviewed") {
-        throw new AppError(
-          "CLAIM_EVIDENCE_IMAGE_STATE_INVALID",
-          "只有调查中且尚未审核的证据可以上传图片。",
-        );
-      }
+      assertEvidenceImageState(current.claimStatus, current.reviewStatus);
       const [attachmentCount] = await transaction
         .select({ count: count() })
         .from(evidenceAttachments)
@@ -345,17 +448,17 @@ export async function uploadEvidenceImage(input: {
         );
       }
 
-      await writeEvidenceImage(prepared.storagePath, prepared.bytes);
+      await input.persist();
       stored = true;
       const [attachment] = await transaction
         .insert(evidenceAttachments)
         .values({
           evidenceId: current.id,
-          originalName: prepared.originalName,
-          storagePath: prepared.storagePath,
-          mimeType: prepared.mimeType,
-          byteSize: prepared.byteSize,
-          sha256: prepared.sha256,
+          originalName: input.originalName,
+          storagePath: input.storagePath,
+          mimeType: input.mimeType,
+          byteSize: input.byteSize,
+          sha256: input.sha256,
         })
         .returning({ id: evidenceAttachments.id });
       if (current.latestSourceCheckId) {
@@ -384,7 +487,8 @@ export async function uploadEvidenceImage(input: {
       return { ...attachment, captureId: current.captureId };
     });
   } catch (error) {
-    if (stored) await removeEvidenceImage(prepared.storagePath).catch(() => undefined);
+    // 直传通道下字节在上一步就已经在存储里，落库失败必须把它删掉，否则留下孤儿 blob。
+    if (stored) await removeEvidenceImage(input.storagePath).catch(() => undefined);
     throw error;
   }
 }
