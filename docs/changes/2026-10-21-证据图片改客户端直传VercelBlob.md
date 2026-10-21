@@ -70,8 +70,8 @@
 | 1 | `pnpm typecheck` | **PASS**（exit 0） |
 | 2 | `pnpm lint` | **PASS**（0 error；新增文件无警告——`client-upload-schema.test.ts` 的未用导入与 `image-upload.ts` 的失效 `eslint-disable` 已清除） |
 | 3 | `pnpm test` | **PASS**：46 文件通过 / 1 跳过；**201 用例通过 / 1 跳过**（新增 3 个测试文件，`src/features/claims` 6 文件 35 用例全绿） |
-| 4 | `pnpm build` | **PASS**（exit 0），路由表出现 `ƒ /api/evidence-images/upload` |
-| 5 | 本地通道不回归 | **PASS**（本机无 Docker、无法起 PG ⇒ e2e 不能本地跑；判据由 CI 的 e2e job 承担，见下方「未验证」） |
+| 4 | `pnpm build` | **PASS**（exit 0），路由表出现 `ƒ /api/evidence-images/upload`；**CI** run `39665425128` 的 `Migrations, checks and build` job 亦 success |
+| 5 | 本地通道不回归 | **PASS（CI 实测）**：run `39665425128`（`d4b2708`）5 个 job 全 success，含 **End-to-end (Playwright)**——`tests/e2e/claim-workflow.spec.ts` 的上传 → 读图 → `content-type: image/png` → `x-content-type-options: nosniff` 断言通过。CI 不设 `BLOB_READ_WRITE_TOKEN`，跑的正是 `local` 驱动 + 前端回落路径 |
 | 6 | 云端通道（平台侧） | **未验证**——本机无 Blob 凭据；须完成 `CICD-待完成.md` **E5** 后按 `docs/11-operations.md` §7.1 实测 |
 
 **新增用例（负向为主，`D3`）**
@@ -105,9 +105,9 @@
 **未验证（如实）**
 
 1. **云端端到端**：需平台凭据（E5）。本机 `.env` 无 `BLOB_READ_WRITE_TOKEN`，任何"本地验证过了"的说法都是假的。
-2. **本地通道 e2e**：本机无 Docker、PG 端口 5432 无口令（见 `memory.md` 已登记事实），
-   `tests/e2e/claim-workflow.spec.ts` 只能由 CI 跑。CI 的 e2e job 不设 `BLOB_READ_WRITE_TOKEN`，
-   因此它覆盖的正是**本地驱动不回归**；云端驱动不在 CI 覆盖范围内（已由 E5 + 平台实测承担）。
+2. **本地通道 e2e**：✅ **已由 CI 覆盖**（run `39665425128` 的 End-to-end job success）。本机仍无法跑
+   （无 Docker、PG 端口 5432 无口令，见 `memory.md` 已登记事实），因此本地未复跑，读数取自 CI。
+   ⚠️ 云端驱动**不在 CI 覆盖范围内**（CI 无 Blob 凭据），由 E5 + 平台实测承担。
 3. **`next/image` 与私有 Blob**：缩略图与在线原图仍走 `/api/evidence-images/:id`（服务端代理），
    未改为直连 Blob URL —— 私有存储的 URL 不可公开访问，这是设计使然，不是遗漏。
 
