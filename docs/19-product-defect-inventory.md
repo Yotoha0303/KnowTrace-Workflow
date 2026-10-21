@@ -191,6 +191,30 @@ OPENAI_MODEL=gpt-5.6-luna / DEEPSEEK_MODEL=deepseek-v4-flash   ← 配了名字�
 
 ---
 
+### D-09 演示数据清理误删系统默认工作区，导致新旧用户登录触发外键违约 500 循环（✅ 已于 2026-10-21 根治）
+
+**【实测】决定性证据**
+- 线上用户在 `/register` 可以顺利创建账号，但在 `/login` 登录后无法进入主界面，反复被重定向弹回登录页。
+- 探测脚本直接携带认证生成的 Cookie 访问根路径 `GET https://knowtrace-workflow.vercel.app/`，服务端稳定抛出 **500 Internal Server Error**。
+- 根因定位到数据库报错：
+  ```text
+  insert or update on table "workspace_memberships" violates foreign key constraint "workspace_memberships_workspace_id_fkey"
+  Key (workspace_id)=(00000000-0000-4000-8000-000000000001) is not present in table "workspaces".
+  ```
+
+**根因**：
+- `src/shared/workspace.ts` 与迁移 `0020_workspace_foundation.sql` 约定了硬编码默认空间锚点 `00000000-0000-4000-8000-000000000001`（`LEGACY_DEFAULT_WORKSPACE_ID`）。
+- 2026-10-20 在准备线上演示数据时，播种脚本执行了 `DELETE FROM workspaces;`，并将新数据放入随机 UUID 空间，导致默认锚点被物理删除。
+- Next.js 服务端在用户认证通过后执行 `ensureLegacyWorkspaceMembership`，无条件向默认空间写入成员映射，导致外键违约崩溃。
+
+**修复（已完成并实测验证）**：
+1. 数据库事务内恢复 `00000000-0000-4000-8000-000000000001` 默认工作区。
+2. 将既有业务捕获与分类全量迁移挂载至该默认空间。
+3. 自动化测试用例以全新用户 `user_e2e_*` 实测执行注册、登录、换取 Token、带 Session Cookie 访问首页，验证状态码由 500 彻底恢复为 **200 OK** 并成功渲染个人仪表盘。
+4. 详见事故复盘报告：[`docs/25-incident-2026-10-21-default-workspace-fkey-login-loop.md`](25-incident-2026-10-21-default-workspace-fkey-login-loop.md)。
+
+---
+
 ## 二、P1：影响体验或存在真实风险
 
 ### D-04 「访问慢」的归因与直觉相反：服务端一点不慢（实测）
