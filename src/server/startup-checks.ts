@@ -25,12 +25,29 @@ import {
  *    产生一条误导性的告警（`ISSUE-S3-024` 的现场就是这样）。改为检查凭据是否在场，
  *    并说明缺什么、去哪里补。
  *
+ * 3. **云托管但没配存储**（`VERCEL=1` 且无凭据）：会回落到本地驱动，等价于本 issue 的原始现场。
+ *    这类环境不适用 `chown` 建议，单独给一条指向平台配置的告警。
+ *
  * pid 1 和 Next.js 都跑在 uid 1001 下，所以本地探测的结果就是真实写入能力。
  */
 export async function assertUploadDirectoryWritable(): Promise<void> {
   if (usesObjectStorage()) {
+    // 显式要求对象存储：有凭据就到此为止——云端不探测本地目录（那是预期不可写的）。
     const warning = objectStorageCredentialWarning();
     if (warning) console.error(warning);
+    return;
+  }
+
+  // 在 Vercel 上未配置 Blob 时会回落到本地驱动——那等于回到本 issue 的原始现场：
+  // 文件系统只读，前端回落到 FormData 通道后表现为「上传失败」。这种情况**不是**本地部署，
+  // 不能套用 chown 建议，必须显式指出该配什么。
+  if (process.env.VERCEL === "1") {
+    console.error(
+      "[knowtrace-startup] 云托管环境（VERCEL=1）没有可用的对象存储凭据：\n" +
+        "  已回落到本地磁盘驱动，而该文件系统是只读的 ⇒ 图片上传会失败。\n" +
+        "  修复：在 Vercel 项目的 Storage 中创建（Private）Blob 存储并连接到本项目，" +
+        "使环境变量 BLOB_READ_WRITE_TOKEN 就位，然后重新部署。",
+    );
     return;
   }
 
