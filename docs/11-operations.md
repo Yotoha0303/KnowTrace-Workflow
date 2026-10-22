@@ -119,16 +119,25 @@ sudo PROJECT_DIR=/opt/knowtrace bash scripts/linux/fix-uploads-ownership.sh
 
 容器文件系统只读、且实例重启/重新部署即清空，因此**不能**用本地驱动。切换方式：
 
-1. 在 Vercel 项目的 Storage 中创建 **Private** Blob 存储并连接到项目
-   （项目环境变量会自动获得 `BLOB_READ_WRITE_TOKEN`）。
+1. 在 Vercel 项目的 Storage 中创建 **Private** Blob 存储并**连接到本项目**。
+   两种连接方式的能力**不同**（见 `ADR-0020` §4）：
+
+   | 连接方式 | 服务端读写 | 浏览器直传（>4.5 MB） |
+   | --- | --- | --- |
+   | 仅连接存储（OIDC，注入 `BLOB_STORE_ID`） | ✅ | ❌ 上传走服务端，单张 **≤4.5 MB** |
+   | 另注入 `BLOB_READ_WRITE_TOKEN` | ✅ | ✅ 单张可达 **10 MB** |
+
 2. 确认 `EVIDENCE_IMAGE_STORAGE` 为空（留空即按凭据自动选择 `vercel-blob`）或显式设为 `vercel-blob`；
    `EVIDENCE_IMAGE_BLOB_ACCESS` 保持 `private`——证据图片是用户隐私数据。
-3. 部署后触发一次上传：浏览器应出现一次**直传**（对象存储域名），随后页面刷新出缩略图。
-4. **判据（可证伪）**：上传一张 **>4.5 MB** 的图片。旧实现必败（平台 413
-   `FUNCTION_PAYLOAD_TOO_LARGE`），新实现应成功——这正是「只换存储驱动」与「直传」的分水岭。
+3. 部署后触发一次上传：OIDC 方式无前端可见差异；`BLOB_READ_WRITE_TOKEN` 方式会先出现一次**直传**
+   （对象存储域名），随后页面刷新出缩略图。
+4. **判据（可证伪）**：
+   - 基础：任意一张小图上传成功且刷新后可见；
+   - 判别：上传一张 **>4.5 MB** 的图片。**仅 OIDC** 时应给出「上限 4.5 MB」的可读提示（不报 413 裸错）；
+     **配了 token** 时应成功——这正是「只换存储驱动」「只连 OIDC」与「直传」三者的分水岭。
 
-排查线索：启动日志出现「缺少 `BLOB_READ_WRITE_TOKEN`」= 存储未连接；
-上传报「Failed to retrieve the client token」= 签发令牌被拒（多数是证据状态/数量门槛，见 `/api/evidence-images/upload` 的 GET 预检）。
+排查线索：启动日志出现「没有可用的对象存储凭据」= 存储未连接；
+上传报「图片存储没有可用凭据」= 连接了但运行时拿不到 OIDC/token。
 本项外部动作见 `CICD-待完成.md` 的 **E5**。
 
 ## 8. 本节之外：运维总入口

@@ -1,4 +1,4 @@
-# 2026-10-21 · 证据图片改客户端直传 Vercel Blob（修复云端上传 100% 失败）
+﻿# 2026-10-21 · 证据图片改客户端直传 Vercel Blob（修复云端上传 100% 失败）
 
 > **状态：实施中**（本文先于代码提交；实测结果回填于第 6 节）。
 > 依据：`ISSUE-S3-024`（#59）云端容器内证据图片上传 100% 失败（`EACCES` / 只读文件系统）。
@@ -111,9 +111,37 @@
 3. **`next/image` 与私有 Blob**：缩略图与在线原图仍走 `/api/evidence-images/:id`（服务端代理），
    未改为直连 Blob URL —— 私有存储的 URL 不可公开访问，这是设计使然，不是遗漏。
 
-## 7. 边界
+### 7.1 追加（2026-10-22）：生产仍失败——驱动判定漏了 OIDC
 
-### 7.1 追加（2026-10-22）：读图错误不再伪装成 404
+**现场**：Vercel 日志 `[knowtrace-startup] 云托管环境（VERCEL=1）没有可用的对象存储凭据`，上传失败。
+
+**根因（我方缺陷）**：Vercel 上存储是以 **OIDC** 方式连接的（注入 `BLOB_STORE_ID`，运行时用
+`VERCEL_OIDC_TOKEN` 换取授权），而 `evidenceImageStorageDriver()` **只认静态 `BLOB_READ_WRITE_TOKEN`**
+⇒ 判定为「无凭据」⇒ 回落本地磁盘 ⇒ 只读文件系统上传失败。
+
+**修复**：
+
+1. `evidenceImageBlobCredentials()` 区分 `read-write-token` / `oidc` / `none`；
+   OIDC 的判定条件是 `BLOB_STORE_ID` + （`VERCEL=1` 或 `VERCEL_OIDC_TOKEN`）——
+   **不能只查 env**：`@vercel/oidc` 的 `getVercelOidcToken()` 首选读**请求上下文头** `x-vercel-oidc-token`。
+2. **直传与存储解耦**：SDK 的 `handleUpload`（签发客户端令牌）**只接受静态读写令牌**，
+   OIDC 下不可直传 ⇒ 探测新增 `server-blob` 通道：**存储仍是对象存储，但由服务端写入**。
+   `server-blob` 与 `form-action`（本地磁盘）**必须可区分**——混为一谈正是本次故障形态。
+3. 服务端写入受平台 4.5 MB 请求体上限约束（产品 10 MB）；前端在 `server-blob` 下超过 4.5 MB
+   直接给出可读提示，而不是让平台回裸 413。
+4. `translateBlobError` 增加**无状态码**的凭据类识别（`No blob credentials found` /
+   `No read-write token found` → `EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED`），否则会落进 500「未知错误」。
+5. 启动告警改为给出两条修法（OIDC 连接 / 注入 token），并说明各自的能力差异。
+
+**实测**：
+- 负向（本地）：只设 `BLOB_STORE_ID`、无 OIDC ⇒ SDK 报 `No blob credentials found`（证明判定边界正确）。
+- 正向（本地）：私有存储 `put/get/del` 往返全 OK（用真实 token）。
+- 单测：OIDC 判定、`server-blob` 与 `form-action` 可区分、凭据类错误翻译 —— 全部纳入（42 用例）。
+
+**仍待平台实测**：OIDC 路径的真实写入需在 Vercel 上触发一次上传（本机无 OIDC）。
+**能力差异**：OIDC 下单张 ≤4.5 MB；注入 `BLOB_READ_WRITE_TOKEN` 后支持 ≤10 MB 且走浏览器直传。
+
+### 7.2 追加（2026-10-22）：读图错误不再伪装成 404
 
 复查生产探测时发现：`/api/evidence-images/:id` 原实现 `catch {}` 一律返回 404，
 存储切到 Blob 后，**凭据失效（401/403）、存储未配置、网络故障都会显示为「图片不存在」**——

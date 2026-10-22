@@ -35,20 +35,53 @@ export function evidenceImageBlobAccess(): "public" | "private" {
 }
 
 /**
+ * 存储凭据的形态。
+ *
+ * - `read-write-token`：静态 `BLOB_READ_WRITE_TOKEN`（自建环境、或手工注入）。
+ * - `oidc`：Vercel 上把存储「连接」到项目时的默认方式——只注入 `BLOB_STORE_ID`，
+ *   运行时用短期的 `VERCEL_OIDC_TOKEN` 换授权。**服务端读写只靠 OIDC 就够**。
+ *
+ * ⚠️ 区分它们是有代价的教训：`2026-10-22` 生产上传失败，日志是「没有可用的对象存储凭据」，
+ * 而项目其实已经用 OIDC 连好了存储——因为驱动判定只认静态 token 就回落到了只读的本地磁盘。
+ */
+export type EvidenceImageBlobCredentials = "read-write-token" | "oidc" | "none";
+
+export function evidenceImageBlobCredentials(): EvidenceImageBlobCredentials {
+  if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) return "read-write-token";
+  // OIDC 的 token 由 `@vercel/oidc` 从**请求上下文头** `x-vercel-oidc-token` 取
+  // （`getVercelOidcToken()` 的首选来源，env 只是兜底），所以这里**不能**只查 env：
+  // 在 Vercel 上只要存储已连接（BLOB_STORE_ID 在场），OIDC 就是运行时可得。
+  const storeConnected = Boolean(process.env.BLOB_STORE_ID?.trim());
+  if (storeConnected && (process.env.VERCEL === "1" || process.env.VERCEL_OIDC_TOKEN?.trim())) {
+    return "oidc";
+  }
+  return "none";
+}
+
+/**
  * 选择存储驱动。
  *
- * `EVIDENCE_IMAGE_STORAGE` 显式指定时以它为准；未指定时，只要环境里有 Blob 凭据就走对象存储
- * —— Vercel 上连接 Blob 存储会自动注入 `BLOB_READ_WRITE_TOKEN`，多一步「记得配这个变量」
- * 只会多一种静默失败。
+ * `EVIDENCE_IMAGE_STORAGE` 显式指定时以它为准；未指定时，**只要存储可用就走对象存储**：
+ * 静态 token 或 OIDC（Vercel 连接存储的默认方式）都算——少一种「记得配哪个变量」的静默失败。
  */
 export function evidenceImageStorageDriver(): EvidenceImageStorageDriver {
   const configured = process.env.EVIDENCE_IMAGE_STORAGE?.trim();
   if (configured === "local" || configured === "vercel-blob") return configured;
-  return process.env.BLOB_READ_WRITE_TOKEN ? "vercel-blob" : "local";
+  return evidenceImageBlobCredentials() === "none" ? "local" : "vercel-blob";
 }
 
 export function usesObjectStorage(): boolean {
   return evidenceImageStorageDriver() === "vercel-blob";
+}
+
+/**
+ * 浏览器**直传**是否可用：SDK 的 `handleUpload`（签发客户端令牌）只接受静态读写令牌，
+ * 没有 token 时 SDK 自己会抛错，不会退到 OIDC。
+ *
+ * ⇒ OIDC 存储上走服务端中转写入（文件 ≤10 MB，通过 Server Action，见 `client-upload` 的探测）。
+ */
+export function supportsClientDirectUpload(): boolean {
+  return evidenceImageBlobCredentials() === "read-write-token";
 }
 
 /**
@@ -58,11 +91,11 @@ export function usesObjectStorage(): boolean {
  */
 export function objectStorageCredentialWarning(): string | null {
   if (evidenceImageStorageDriver() !== "vercel-blob") return null;
-  if (process.env.BLOB_READ_WRITE_TOKEN) return null;
+  if (evidenceImageBlobCredentials() !== "none") return null;
   return (
-    "[knowtrace-startup] EVIDENCE_IMAGE_STORAGE=vercel-blob 但缺少 BLOB_READ_WRITE_TOKEN：\n" +
-    "  图片上传会在签发直传令牌时失败。请在 Vercel 项目的 Storage 中创建（Private）Blob 存储，\n" +
-    "  并在项目环境变量中注入 BLOB_READ_WRITE_TOKEN。"
+    "[knowtrace-startup] EVIDENCE_IMAGE_STORAGE=vercel-blob 但没有可用的对象存储凭据：\n" +
+    "  需要 `BLOB_READ_WRITE_TOKEN`，或在 Vercel 上把 Blob 存储**连接**到本项目" +
+    "（注入 BLOB_STORE_ID，运行时由 VERCEL_OIDC_TOKEN 鉴权）。"
   );
 }
 
@@ -117,14 +150,19 @@ async function blobModule() {
 
 async function writeBlob(storagePath: string, bytes: Uint8Array, contentType: string) {
   const { put } = await blobModule();
-  // 写入之后可能立刻被回读校验（见 service.ts 的提交路径），故关掉随机后缀与覆盖，
-  // 让 pathname 与数据库里的 storage_path 一一对应。
-  await put(evidenceImageBlobPathname(storagePath), Buffer.from(bytes), {
-    access: blobAccess(),
-    addRandomSuffix: false,
-    allowOverwrite: false,
-    contentType,
-  });
+  try {
+    // 写入之后可能立刻被回读校验（见 service.ts 的提交路径），故关掉随机后缀与覆盖，
+    // 让 pathname 与数据库里的 storage_path 一一对应。
+    await put(evidenceImageBlobPathname(storagePath), Buffer.from(bytes), {
+      access: blobAccess(),
+      addRandomSuffix: false,
+      allowOverwrite: false,
+      contentType,
+    });
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw translateBlobError(error) ?? error;
+  }
 }
 
 /**
@@ -137,19 +175,35 @@ async function writeBlob(storagePath: string, bytes: Uint8Array, contentType: st
  */
 function translateBlobError(error: unknown): AppError | null {
   const message = error instanceof Error ? error.message : String(error);
+  // 凭据类失败**没有** HTTP 状态码（SDK 在发请求前就抛了），必须单独识别，
+  // 否则会落进「未知错误」→ 500，用户看不到该配什么。
+  if (/No blob credentials found|No read-write token found/i.test(message)) {
+    return new AppError(
+      "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
+      "图片存储没有可用凭据：请把 Blob 存储连接到项目（OIDC），或注入 BLOB_READ_WRITE_TOKEN。",
+      { cause: message },
+    );
+  }
+  if (/Invalid token|unable to extract store ID/i.test(message)) {
+    return new AppError(
+      "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
+      "图片存储凭据无效（token 无法解析出 store id），请检查 BLOB_READ_WRITE_TOKEN。",
+      { cause: message },
+    );
+  }
   const status = Number(/\b(\d{3})\b/.exec(message)?.[1] ?? NaN);
   if (status === 404) return new AppError("EVIDENCE_IMAGE_NOT_FOUND", "图片不存在。");
   if (status === 401 || status === 403) {
     return new AppError(
       "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
-      "图片存储凭据无效或已过期，请联系管理员检查 BLOB_READ_WRITE_TOKEN。",
+      "图片存储凭据无效或已过期，请检查 Blob 存储的连接状态与 token。",
       { cause: message },
     );
   }
   if (/store.*not.*found|storeId/i.test(message)) {
     return new AppError(
       "EVIDENCE_IMAGE_STORAGE_NOT_CONFIGURED",
-      "图片存储未正确配置（存储不存在或 token 与存储不匹配）。",
+      "图片存储未正确配置（存储不存在，或凭据与存储不匹配）。",
       { cause: message },
     );
   }
@@ -172,7 +226,13 @@ async function readBlob(storagePath: string): Promise<Buffer> {
 
 async function removeBlob(storagePath: string) {
   const { del } = await blobModule();
-  await del(evidenceImageBlobPathname(storagePath));
+  try {
+    await del(evidenceImageBlobPathname(storagePath));
+  } catch (error) {
+    // 删除时的「不存在」等价于已删除；其余错误仍要如实上抛。
+    if (translateBlobError(error)?.code === "EVIDENCE_IMAGE_NOT_FOUND") return;
+    throw translateBlobError(error) ?? error;
+  }
 }
 
 export async function writeEvidenceImage(

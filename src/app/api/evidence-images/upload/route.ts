@@ -10,6 +10,7 @@ import {
 import {
   evidenceImageBlobAccess,
   evidenceImageStorageDriver,
+  supportsClientDirectUpload,
   usesObjectStorage,
 } from "@/features/claims/image-storage";
 import {
@@ -50,6 +51,11 @@ export async function GET(request: Request) {
   if (!usesObjectStorage()) {
     return NextResponse.json({ available: false, driver });
   }
+  // OIDC 连接的存储**可用**，但 SDK 的客户端直传只认静态读写令牌 ⇒ 让前端改走服务端写入，
+  // 同时把「存储可用」如实告诉它，避免前端误以为要回落到本地表单通道。
+  if (!supportsClientDirectUpload()) {
+    return NextResponse.json({ available: false, storage: "vercel-blob", driver, direct: false });
+  }
   if (!EVIDENCE_ID_PATTERN.test(evidenceId)) {
     return NextResponse.json(
       { ok: false, error: { code: "VALIDATION_ERROR", message: "证据 ID 无效。" } },
@@ -64,6 +70,8 @@ export async function GET(request: Request) {
     const publicError = toPublicError(error);
     return NextResponse.json({
       available: true,
+      storage: "vercel-blob",
+      direct: true,
       driver,
       access: evidenceImageBlobAccess(),
       ready: false,
@@ -72,6 +80,8 @@ export async function GET(request: Request) {
   }
   return NextResponse.json({
     available: true,
+    storage: "vercel-blob",
+    direct: true,
     driver,
     access: evidenceImageBlobAccess(),
     ready: true,
@@ -108,6 +118,20 @@ export async function POST(request: Request) {
 
   const type = (raw as { type?: unknown }).type;
   if (type === "blob.generate-client-token" || type === "blob.upload-completed") {
+    if (!supportsClientDirectUpload()) {
+      // 只拦**直传**的两种事件；提交事件（浏览器已直传成功后的 JSON）仍需放行，
+      // 否则切换配置的瞬间会让已上传的对象无法落库。
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "EVIDENCE_IMAGE_DIRECT_UPLOAD_UNAVAILABLE",
+            message: "当前存储不支持浏览器直传，请刷新页面后重试（将改走服务端写入）。",
+          },
+        },
+        { status: 409 },
+      );
+    }
     return handleBlobEvent(request, raw as HandleUploadBody);
   }
   return commitUploadedImage(raw);

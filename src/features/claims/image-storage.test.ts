@@ -10,10 +10,12 @@ vi.mock("@vercel/blob", () => ({
 const blob = await import("@vercel/blob");
 const {
   evidenceImageBlobPathname,
+  evidenceImageBlobCredentials,
   evidenceImageStorageDriver,
   objectStorageCredentialWarning,
   readEvidenceImage,
   removeEvidenceImage,
+  supportsClientDirectUpload,
   usesObjectStorage,
   writeEvidenceImage,
 } = await import("./image-storage");
@@ -27,6 +29,9 @@ afterEach(() => {
   delete process.env.EVIDENCE_IMAGE_STORAGE;
   delete process.env.EVIDENCE_IMAGE_BLOB_ACCESS;
   delete process.env.BLOB_READ_WRITE_TOKEN;
+  delete process.env.BLOB_STORE_ID;
+  delete process.env.VERCEL_OIDC_TOKEN;
+  delete process.env.VERCEL;
   vi.mocked(blob.put).mockReset();
   vi.mocked(blob.get).mockReset();
   vi.mocked(blob.del).mockReset();
@@ -61,6 +66,37 @@ describe("证据图片存储驱动选择", () => {
     process.env.EVIDENCE_IMAGE_STORAGE = "vercel-blob";
     expect(evidenceImageStorageDriver()).toBe("vercel-blob");
     expect(objectStorageCredentialWarning()).toContain("BLOB_READ_WRITE_TOKEN");
+  });
+
+  it("Vercel 用 OIDC 连接存储（BLOB_STORE_ID + VERCEL=1，OIDC 从请求头取）时也必须走对象存储", () => {
+    // 2026-10-22 生产故障：只认静态 token ⇒ 已用 OIDC 连好的存储被判定为「没有凭据」，
+    // 驱动回落本地磁盘，上传必然失败。
+    // 注意：`@vercel/oidc` 的 getVercelOidcToken() 首选读**请求上下文头** x-vercel-oidc-token，
+    // env 只是兜底 ⇒ 判定不能只查 VERCEL_OIDC_TOKEN。
+    process.env.BLOB_STORE_ID = "store_abc123";
+    process.env.VERCEL = "1";
+    expect(evidenceImageBlobCredentials()).toBe("oidc");
+    expect(evidenceImageStorageDriver()).toBe("vercel-blob");
+    expect(objectStorageCredentialWarning()).toBeNull();
+    // 但 OIDC 下**不能**浏览器直传（SDK 的 handleUpload 只认静态读写令牌）
+    expect(supportsClientDirectUpload()).toBe(false);
+  });
+
+  it("有 BLOB_STORE_ID + VERCEL_OIDC_TOKEN（本地模拟）时同样判为 OIDC", () => {
+    process.env.BLOB_STORE_ID = "store_abc123";
+    process.env.VERCEL_OIDC_TOKEN = "oidc-token-value";
+    expect(evidenceImageBlobCredentials()).toBe("oidc");
+  });
+
+  it("只有 BLOB_STORE_ID、既不在 Vercel 也没有 OIDC 时不算可用（本地脚本常见）", () => {
+    process.env.BLOB_STORE_ID = "store_abc123";
+    expect(evidenceImageBlobCredentials()).toBe("none");
+    expect(evidenceImageStorageDriver()).toBe("local");
+  });
+
+  it("静态读写令牌下浏览器直传可用", () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    expect(supportsClientDirectUpload()).toBe(true);
   });
 });
 
@@ -153,5 +189,15 @@ describe("对象存储驱动上的读写删", () => {
 
     vi.mocked(blob.del).mockRejectedValue(new Error("network down"));
     await expect(removeEvidenceImage(UUID_JPG)).rejects.toThrow("network down");
+  });
+
+  it("凭据类失败（无状态码）必须翻译成可读错误，不能落进「未知错误」", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    vi.mocked(blob.put).mockRejectedValue(
+      new blob.BlobError("No blob credentials found. Pass a `token` option, set BLOB_READ_WRITE_TOKEN, or use `oidcToken`"),
+    );
+    await expect(writeEvidenceImage(UUID_PNG, PNG_HEADER)).rejects.toMatchObject({
+      code: "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
+    });
   });
 });

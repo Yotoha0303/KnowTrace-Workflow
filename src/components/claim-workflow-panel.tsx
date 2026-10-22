@@ -362,6 +362,15 @@ function EvidenceItem({
           setMessage(probe.reason);
           return;
         }
+        // 服务端写入通道受 Vercel 函数请求体 4.5 MB 上限约束（浏览器直传则不受）；
+        // 超限时平台返回的是 413，用户看不懂，所以在这里先说清楚。
+        if (probe.mode === "server-blob" && file.size > 4.5 * 1024 * 1024) {
+          setMessage(
+            "当前存储未启用浏览器直传，经服务端上传的单张图片上限为 4.5 MB（平台请求体限制）。" +
+              "请压缩后重试；管理员配置 BLOB_READ_WRITE_TOKEN 后可支持 10 MB。",
+          );
+          return;
+        }
 
         if (probe.mode === "direct") {
           let prepared;
@@ -393,6 +402,8 @@ function EvidenceItem({
         const formData = new FormData();
         formData.set("evidenceId", evidence.id);
         formData.set("file", file);
+        // `server-blob`（OIDC 连接的 Vercel Blob）与本地驱动**都**走这条通道，
+        // 区别在服务端的驱动：前者写对象存储，后者写本地磁盘。用户看到的流程相同。
         const result = await uploadEvidenceImageAction(formData);
         if (!result.ok) {
           setMessage(

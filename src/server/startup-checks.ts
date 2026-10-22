@@ -38,15 +38,17 @@ export async function assertUploadDirectoryWritable(): Promise<void> {
     return;
   }
 
-  // 在 Vercel 上未配置 Blob 时会回落到本地驱动——那等于回到本 issue 的原始现场：
-  // 文件系统只读，前端回落到 FormData 通道后表现为「上传失败」。这种情况**不是**本地部署，
-  // 不能套用 chown 建议，必须显式指出该配什么。
+  // 在 Vercel 上缺少可用凭据（既无静态 token、也未通过 OIDC 连接存储）会回落到本地驱动——
+  // 那等于回到本 issue 的原始现场：文件系统只读，前端回落到 FormData 通道后表现为「上传失败」。
+  // 这类环境不适用 chown 建议，必须显式指出该配什么。
   if (process.env.VERCEL === "1") {
     console.error(
       "[knowtrace-startup] 云托管环境（VERCEL=1）没有可用的对象存储凭据：\n" +
         "  已回落到本地磁盘驱动，而该文件系统是只读的 ⇒ 图片上传会失败。\n" +
-        "  修复：在 Vercel 项目的 Storage 中创建（Private）Blob 存储并连接到本项目，" +
-        "使环境变量 BLOB_READ_WRITE_TOKEN 就位，然后重新部署。",
+        "  修复（任选其一）：\n" +
+        "   A) 在 Vercel 项目 Storage 中把 Blob 存储**连接**到本项目（注入 BLOB_STORE_ID，运行时走 OIDC）；\n" +
+        "   B) 在项目环境变量中注入 BLOB_READ_WRITE_TOKEN（同时启用浏览器直传，支持 >4.5 MB）。\n" +
+        "  改完后需 Redeploy 使环境变量生效。",
     );
     return;
   }
