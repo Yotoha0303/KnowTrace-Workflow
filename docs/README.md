@@ -90,6 +90,7 @@
 | [`19-product-defect-inventory.md`](19-product-defect-inventory.md) | 缺陷与体验问题清单，按 P0/P1 分级，含实测证据与修复状态 |
 | [`20-incident-2026-09-30-causation.md`](20-incident-2026-09-30-causation.md) | 2026-09-30 全站 500 事故的成因 |
 | [`21-path-to-100-percent.md`](21-path-to-100-percent.md) | 把「建成」重估为「**被真实验证过**」的进度（约 40 分）与补齐路径 |
+| [`26-case-2026-10-22-云端图片上传修复全过程.md`](26-case-2026-10-22-云端图片上传修复全过程.md) | 云端图片上传**修了五次才通**的过程记录：五个叠加缺陷、每一轮的判据、以及「CI 绿 ≠ 可用」的教训 |
 
 ## 其他目录
 
