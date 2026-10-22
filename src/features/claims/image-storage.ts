@@ -127,8 +127,37 @@ async function writeBlob(storagePath: string, bytes: Uint8Array, contentType: st
   });
 }
 
-async function readBlob(storagePath: string) {
-  const { BlobError, get } = await blobModule();
+/**
+ * 把 SDK 的原始错误翻译成**可区分**的应用错误。
+ *
+ * 为什么必须分类：调用方（读图路由）原本把一切异常都当成「图片不存在」返回 404，
+ * 于是凭据缺失 / 存储无权限 / 网络故障全都伪装成 404 —— 正是本 issue 家族
+ * 「看起来正常、其实没在工作」的形态。现在只有真正的 404 才算「不存在」，
+ * 其余一律带上真实原因上抛，由调用方记日志并按 5xx 处理。
+ */
+function translateBlobError(error: unknown): AppError | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = Number(/\b(\d{3})\b/.exec(message)?.[1] ?? NaN);
+  if (status === 404) return new AppError("EVIDENCE_IMAGE_NOT_FOUND", "图片不存在。");
+  if (status === 401 || status === 403) {
+    return new AppError(
+      "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
+      "图片存储凭据无效或已过期，请联系管理员检查 BLOB_READ_WRITE_TOKEN。",
+      { cause: message },
+    );
+  }
+  if (/store.*not.*found|storeId/i.test(message)) {
+    return new AppError(
+      "EVIDENCE_IMAGE_STORAGE_NOT_CONFIGURED",
+      "图片存储未正确配置（存储不存在或 token 与存储不匹配）。",
+      { cause: message },
+    );
+  }
+  return null;
+}
+
+async function readBlob(storagePath: string): Promise<Buffer> {
+  const { get } = await blobModule();
   try {
     const result = await get(evidenceImageBlobPathname(storagePath), { access: blobAccess() });
     if (!result || result.statusCode !== 200) {
@@ -137,10 +166,7 @@ async function readBlob(storagePath: string) {
     return Buffer.from(await new Response(result.stream).arrayBuffer());
   } catch (error) {
     if (error instanceof AppError) throw error;
-    // SDK 对 404 抛的是通用 BlobError（`Failed to fetch blob: 404 …`），这里翻译成"不存在"，
-    // 让调用方（读图路由 / 导入预检）能区分"没有这张图"与"存储不可用"。
-    if (error instanceof BlobError && /\b404\b/.test(error.message)) return null;
-    throw error;
+    throw translateBlobError(error) ?? error;
   }
 }
 
@@ -175,9 +201,7 @@ export async function writeEvidenceImage(
 
 export async function readEvidenceImage(storagePath: string) {
   if (evidenceImageStorageDriver() === "vercel-blob") {
-    const bytes = await readBlob(storagePath);
-    if (!bytes) throw new AppError("EVIDENCE_IMAGE_NOT_FOUND", "图片不存在。");
-    return bytes;
+    return readBlob(storagePath);
   }
   return readLocal(storagePath);
 }

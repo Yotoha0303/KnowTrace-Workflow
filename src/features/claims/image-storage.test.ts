@@ -128,6 +128,24 @@ describe("对象存储驱动上的读写删", () => {
     });
   });
 
+  it("凭据失效不能被伪装成「图片不存在」", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    vi.mocked(blob.get).mockRejectedValue(
+      new blob.BlobError("Failed to fetch blob: 403 Forbidden"),
+    );
+    await expect(readEvidenceImage(UUID_PNG)).rejects.toMatchObject({
+      code: "EVIDENCE_IMAGE_STORAGE_UNAUTHORIZED",
+    });
+  });
+
+  it("其它存储故障原样上抛（不翻译、不吞掉）", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
+    vi.mocked(blob.get).mockRejectedValue(
+      new blob.BlobError("Failed to fetch blob: 500 Internal Server Error"),
+    );
+    await expect(readEvidenceImage(UUID_PNG)).rejects.toThrow("500 Internal Server Error");
+  });
+
   it("删除走 del；不吞掉其它错误", async () => {
     process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_test";
     await removeEvidenceImage(UUID_JPG);
