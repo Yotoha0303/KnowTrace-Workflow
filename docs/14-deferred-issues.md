@@ -185,14 +185,14 @@
 当前现象（逐条给出可复核的位置）：
 
 1. `scripts/ops/scripts/monthly-ops.sh:340,345` 的 `500MiB` 内存阈值仍按「postgres / mysql / redis 三容器」标定；切为「两个 PG 实例 + redis」后画像不同。代码注释已显式声明「阈值未重算」，但**数字本身没有更新**。该项只产生 `ops_warn`，**不构成硬门**。
-2. `services/go-user-system/k8s/` 仍指 MySQL：`k8s/mysql.yaml` 整个文件是 MySQL 部署，`k8s/configmap.yaml` 与 `k8s/migration-job.yaml` 含 MySQL 连接参数。**被「部署目标未定」阻塞**（见 [`09-delivery-plan.md`](09-delivery-plan.md) §8「编码前仍需确认」）。
-3. `services/go-user-system/Makefile:282,284` 的 `kind-load-deps` 仍 `docker pull` / `docker save` `mysql:8.4`。同上被部署目标阻塞。
+2. `services/go-user-system/k8s/` 仍指 MySQL：`k8s/mysql.yaml` 整个文件是 MySQL 部署，`k8s/configmap.yaml` 与 `k8s/migration-job.yaml` 含 MySQL 连接参数。~~被「部署目标未定」阻塞~~ → **阻塞已解除（`2026-10-22`，`ADR-0021` 裁定优先双轨）**，可开工。
+3. `services/go-user-system/Makefile:282,284` 的 `kind-load-deps` 仍 `docker pull` / `docker save` `mysql:8.4`。~~同上被部署目标阻塞~~ → **阻塞同已解除**。
 4. `scripts/linux/offsite-backup.sh:195` 的上传前断言是在 **age 密文**里 `grep -qaE 'AUTH_JWT_SECRET=|AUTH_DB_PASSWORD=|POSTGRES_PASSWORD='`。密文不含明文键名，该断言**恒为假、永不触发**；且键名清单不含 `AUTH_DB_ROOT_PASSWORD` / `METRICS_BEARER_TOKEN` / `KNOWTRACE_ADMIN_PASSWORD`。**非 M5 引入**，登记以免它被当成「已有防线」。
 
 期望行为：
 
 1. 阈值取自**新组合下的实测** `MemAvailable` 基线，不是按容器数线性缩放。
-2. `k8s/` 指向认证 PostgreSQL；改它的前提是部署目标先定，不在目标未定时改。
+2. `k8s/` 指向认证 PostgreSQL；**部署目标已于 `2026-10-22` 裁定（`ADR-0021`：优先双轨），本条不再被阻塞**。
 3. `kind-load-deps` 预热的是 compose 里实际存在的镜像。
 4. 上传前断言改为对**明文源文件**（加密前）做检查，或改为「解密后抽样检查」；键名清单补齐根 `.env` 的真实键名。
 
@@ -200,6 +200,7 @@
 
 - ① 给出一次「两 PG + redis」组合下的 `MemAvailable` 实测记录，并据它写出新阈值；改后 `monthly-ops.sh` 在正常组合下不误报、在注入低内存时能报。
 - ② `git grep -n "mysql" -- services/go-user-system/k8s/` 在部署目标确定后的提交里清零。
+  （部署目标已于 `2026-10-22` 确定，见 `ADR-0021` —— 该前置**已满足**，本条可直接执行。）
 - ③ `git grep -n "mysql:8.4" -- services/go-user-system/Makefile` 零命中。
 - ④ 一条**负向用例**：对一份刻意含 `AUTH_DB_PASSWORD=` 明文的文件跑上传前检查 ⇒ 必须拒绝且 `exit 2`；当前实现对任何密文都不会触发，可据此判「修好没修好」。
 - ⑤ 上述 ①–④ 中至少 ①④ 有一条进 CI 或留下带日期的实测记录（与 `KT-DEFER-013` 同族）。
@@ -286,6 +287,27 @@
 - 或改用完成回调（`handleUpload` 的 `blob.upload-completed` 事件）直接落库并取消浏览器的二次提交。
 
 在此之前，**不得**把「存储用量 = 证据数」当成事实引用。
+
+## KT-DEFER-017 「不得删除自托管资产」目前只是提示词约束，无机械判据
+
+状态：**未开始**。来源：`ADR-0021`（`2026-10-22` 部署形态裁定）第 3 条硬约束。
+
+现象：`ADR-0021` 规定 `compose.yaml` · `compose.production.yaml` · `deploy/**` · `scripts/linux/**` ·
+`scripts/ops/**` · `Dockerfile` · `Makefile` 等自托管资产**一律保留、不得删除**。
+但这条**没有任何机械守卫**：删掉 `deploy/` 下几个文件，CI 依然全绿——
+与 `AGENTS.md` D3「看起来正常、其实没在工作」同族。
+
+代价：双轨里自托管那条轨**当前本就未被验证**（自 `2026-10-08` 停机后无真实运行，本机亦无 Docker），
+再叠加「资产可被静默删除」，等于这条轨**在无人察觉中腐烂**。
+
+后续验收（可判定）：
+
+1. 建一份**基线清单**（`2026-10-22` 实测：83 个入库文件），入库为一个文件（如 `docs/dualtrack-assets.txt`）。
+2. CI 加一步：`git ls-files` 的交集比对基线；**被删除** ⇒ 失败；**新增** ⇒ 只提示不失败。
+3. **负向用例（必需）**：在 PR 里故意删掉 `deploy/README.md` ⇒ CI **必须**红。
+   只验「不删时绿」区分不了「守卫有效」与「守卫是死代码」（D3）。
+4. 例外路径：确实要删时须**引用取代本裁定的 ADR 编号**，并在同一提交里更新基线清单——
+   即「删除必须是有据的、留痕的」，不是 `rm` 一下即可。
 
 ## 迭代顺序建议
 
