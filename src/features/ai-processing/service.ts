@@ -271,7 +271,7 @@ export async function organizeCapture(input: {
     .returning();
 
   try {
-    const result = await withOrganizationAccess({ workspaceId: scope.workspaceId, provider: selection.auditProvider, ownConnection: !!input.connection }, () => organizeWithAI({
+    const result = await withOrganizationAccess({ workspaceId: scope.workspaceId, provider: selection.provider, connectionMode: input.connection?.mode }, () => organizeWithAI({
       capture,
       categories: activeCategories,
       assignedCategoryIds: [...assignedCategoryIds],

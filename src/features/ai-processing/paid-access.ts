@@ -8,13 +8,16 @@ const settings = z.object({
   environment: z.enum(["sandbox", "live"]), feature: z.uuid(),
 });
 
-/** Optional hosted-organization access; mock and user-supplied connections remain independent. */
+/** Optional hosted access. Only explicit BYOK API keys and mock calls bypass the gate. */
 export async function withOrganizationAccess<T>(
-  input: { workspaceId: string; provider: string; ownConnection: boolean },
+  input: { workspaceId: string; provider: string; connectionMode?: string },
   organize: () => Promise<T>,
   env: Record<string, string | undefined> = process.env,
 ): Promise<T> {
-  if (!env.LONGPLAY_AI_ACCESS_FEATURE_ID || input.provider === "mock" || input.ownConnection) return organize();
+  // A localhost proxy can spend the operator's credentials; a caller-selected mode
+  // is not proof that the caller owns that proxy's provider account.
+  const ownConnection = input.connectionMode === "api_key";
+  if (!env.LONGPLAY_AI_ACCESS_FEATURE_ID || input.provider === "mock" || ownConnection) return organize();
   let allowed: boolean;
   try {
     const config = settings.parse({ baseUrl: env.LONGPLAY_BASE_URL, key: env.LONGPLAY_SECRET_KEY, app: env.LONGPLAY_APP_ID, environment: env.LONGPLAY_ENVIRONMENT, feature: env.LONGPLAY_AI_ACCESS_FEATURE_ID });

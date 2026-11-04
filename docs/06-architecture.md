@@ -256,7 +256,8 @@ SHA-256，浏览器声明的 MIME / 大小 / 哈希一律不采信。存储侧�
 配置 `LONGPLAY_AI_ACCESS_FEATURE_ID` 后，AI 整理服务在调用托管模型前，
 通过 Longplay 服务端 SDK 按已验证的 `scope.workspaceId` 读取当前 access 权益。
 Customer external ID 为 `knowtrace:workspace:<workspaceId>`；记录正文、模型密钥、
-主张和证据不发送给 Longplay。未配置时保持原行为；mock 和用户自带连接不受此门控。
+主张和证据不发送给 Longplay。未配置时保持原行为；mock 和显式 BYOK API-key 模式不受此门控。
+server 模式和 CC-Switch 本地代理可能使用运营方凭据，因此仍须检查。
 其余必填服务端变量见 `.env.example`，API 地址和 sandbox/live 环境必须显式指定。
 
 拒绝、撤权、配置错误或服务不可用时不调用模型，失败仍由现有 AI run 流程记录。

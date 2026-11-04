@@ -3,16 +3,22 @@ import { withOrganizationAccess } from "./paid-access";
 const api = vi.hoisted(() => ({ customer: vi.fn(), check: vi.fn(), create: vi.fn() }));
 vi.mock("@tinkerlandai/longplay-sdk/server", () => ({ createLongplayServer: api.create }));
 const env = { LONGPLAY_AI_ACCESS_FEATURE_ID: "11111111-1111-4111-8111-111111111111", LONGPLAY_BASE_URL: "https://billing.example", LONGPLAY_SECRET_KEY: "private", LONGPLAY_APP_ID: "app", LONGPLAY_ENVIRONMENT: "sandbox" };
-const input = { workspaceId: "trusted-workspace", provider: "openai", ownConnection: false };
+const input = { workspaceId: "trusted-workspace", provider: "openai" };
 beforeEach(() => {
   vi.clearAllMocks();
   api.create.mockReturnValue({ getOrCreateCustomer: api.customer, checkEntitlement: api.check });
   api.customer.mockResolvedValue({ customer: { id: "customer" } });
   api.check.mockResolvedValue({ check: { allowed: true, kind: "access" } });
 });
-it.each([{ ...input, provider: "mock" }, { ...input, ownConnection: true }])("keeps local/BYOK calls outside hosted billing", async (request) => {
+it.each([{ ...input, provider: "mock" }, { ...input, connectionMode: "api_key" }])("keeps local/BYOK calls outside hosted billing", async (request) => {
   await expect(withOrganizationAccess(request, async () => "ok", env)).resolves.toBe("ok");
   expect(api.create).not.toHaveBeenCalled();
+});
+it.each([{ ...input, connectionMode: "server" }, { ...input, connectionMode: "ccswitch" }, { ...input, provider: "deepseek", connectionMode: "ccswitch" }])("cannot bypass hosted billing with a connection object that can still use operator credentials", async (request) => {
+  const model = vi.fn();
+  api.check.mockResolvedValue({ check: { allowed: false, kind: "access" } });
+  await expect(withOrganizationAccess(request, model, env)).rejects.toMatchObject({ code: "AI_PLAN_REQUIRED" });
+  expect(model).not.toHaveBeenCalled();
 });
 it("is disabled without its feature configuration", async () => {
   await expect(withOrganizationAccess(input, async () => "ok", {})).resolves.toBe("ok");
