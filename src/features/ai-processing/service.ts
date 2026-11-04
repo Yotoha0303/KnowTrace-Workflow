@@ -43,6 +43,7 @@ import {
   type AISuggestionPayload,
 } from "./schema";
 import { applySelectedContentSuggestions } from "./content-edits";
+import { withOrganizationAccess } from "./paid-access";
 import {
   claimAuditEvidenceFingerprint,
   sanitizeClaimAuditPayload,
@@ -270,13 +271,13 @@ export async function organizeCapture(input: {
     .returning();
 
   try {
-    const result = await organizeWithAI({
+    const result = await withOrganizationAccess({ workspaceId: scope.workspaceId, provider: selection.auditProvider, ownConnection: !!input.connection }, () => organizeWithAI({
       capture,
       categories: activeCategories,
       assignedCategoryIds: [...assignedCategoryIds],
       provider: input.provider,
       connection: input.connection,
-    });
+    }));
     const payload = sanitizePayload(
       result.payload,
       capture.content,

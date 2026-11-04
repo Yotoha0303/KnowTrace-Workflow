@@ -250,3 +250,16 @@ SHA-256，浏览器声明的 MIME / 大小 / 哈希一律不采信。存储侧�
 - 测试和迁移是否可靠。
 
 优先复用基础 UI、编辑器、数据库配置和部署脚本；不为了“不是从零开始”而继承不匹配的业务模型。
+
+## 可选的托管 AI 整理权限
+
+配置 `LONGPLAY_AI_ACCESS_FEATURE_ID` 后，AI 整理服务在调用托管模型前，
+通过 Longplay 服务端 SDK 按已验证的 `scope.workspaceId` 读取当前 access 权益。
+Customer external ID 为 `knowtrace:workspace:<workspaceId>`；记录正文、模型密钥、
+主张和证据不发送给 Longplay。未配置时保持原行为；mock 和用户自带连接不受此门控。
+其余必填服务端变量见 `.env.example`，API 地址和 sandbox/live 环境必须显式指定。
+
+拒绝、撤权、配置错误或服务不可用时不调用模型，失败仍由现有 AI run 流程记录。
+这是 #79 的托管整理付费能力切片，不是 Token/存储计量、预留或扣费实现；
+metered/credit Feature 不能用只读检查来防止并发超支，因此会被拒绝。
+运营方须在启用前配置正式套餐和管理员购买/管理入口；客户端付款返回不能证明权益。

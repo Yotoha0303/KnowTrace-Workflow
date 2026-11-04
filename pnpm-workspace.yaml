@@ -25,3 +25,4 @@ minimumReleaseAgeExclude:
   - next@16.3.1 || 16.4.1
   - '@next/eslint-plugin-next@16.3.1'
   - eslint-config-next@16.3.1
+  - '@tinkerlandai/longplay-sdk@0.10.15'
