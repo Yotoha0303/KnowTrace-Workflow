@@ -1,0 +1,165 @@
+# KnowTrace-Workflow 交付轻量版编排文件 (compose.lite.yaml)
+# 专为个人研究员、一人工作室与轻量云服务器 (1C2G / 2C4G) 定制
+# 相比完整版剥离了 6 个纯运维监控容器 (Prometheus/Grafana/Loki/Alloy/Alertmanager/Blackbox)
+# 并将业务库与认证库收敛至单一 PostgreSQL 实例，常驻内存占用 < 800MB
+
+name: knowtrace-lite
+
+x-auth-build: &auth-build
+  context: ./services/go-user-system
+  dockerfile: Dockerfile
+  args:
+    VERSION: ${AUTH_APP_VERSION:-lite}
+    COMMIT: ${AUTH_APP_COMMIT:-release}
+    BUILD_TIME: ${AUTH_APP_BUILD_TIME:-2026-11-14}
+
+services:
+  # 统一数据库：单实例承载 knowtrace_workflow 与 go_user_system 双库
+  single-postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD:-knowtrace_root_pwd}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:-knowtrace}
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-knowtrace_auth_123}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
+    volumes:
+      - knowtrace_lite_postgres_data:/var/lib/postgresql/data
+      - ./deploy/lite/init-unified-db.sh:/docker-entrypoint-initdb.d/10-init-unified-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowtrace_workflow -d knowtrace_workflow && pg_isready -U go_user_system -d go_user_system"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # 极简 Redis 缓存与会话黑名单支持
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - knowtrace_lite_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+    restart: unless-stopped
+
+  # 认证服务数据库迁移任务
+  auth-migrate:
+    build: *auth-build
+    image: knowtrace-workflow-auth:lite
+    command: ["migrate", "up"]
+    environment:
+      DB_HOST: single-postgres
+      DB_PORT: "5432"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:-knowtrace_auth_123}
+      DB_NAME: go_user_system
+    depends_on:
+      single-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # 默认管理员用户自动初始化
+  auth-bootstrap:
+    build: *auth-build
+    image: knowtrace-workflow-auth:lite
+    command: ["bootstrap-admin-if-needed"]
+    environment:
+      DB_HOST: single-postgres
+      DB_PORT: "5432"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:-knowtrace_auth_123}
+      DB_NAME: go_user_system
+      BOOTSTRAP_ADMIN_USERNAME: ${KNOWTRACE_ADMIN_USERNAME:-KnowTrace-Admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${KNOWTRACE_ADMIN_PASSWORD:-KnowTrace@123456}
+      JWT_SECRET: ${AUTH_JWT_SECRET:-knowtrace_super_secure_jwt_secret_token_2026}
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Go 原生高性能用户认证微服务
+  auth:
+    build: *auth-build
+    image: knowtrace-workflow-auth:lite
+    ports:
+      - "127.0.0.1:${AUTH_BACKEND_PORT:-8082}:8082"
+    environment:
+      DB_HOST: single-postgres
+      DB_PORT: "5432"
+      DB_USER: go_user_system
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:-knowtrace_auth_123}
+      DB_NAME: go_user_system
+      APP_ENV: production
+      APP_PORT: "8082"
+      JWT_SECRET: ${AUTH_JWT_SECRET:-knowtrace_super_secure_jwt_secret_token_2026}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${AUTH_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      JWT_REFRESH_TOKEN_EXPIRE_HOURS: ${AUTH_REFRESH_TOKEN_EXPIRE_HOURS:-168}
+      REGISTRATION_ENABLED: ${AUTH_REGISTRATION_ENABLED:-true}
+      REDIS_ENABLED: "true"
+      REDIS_ADDR: redis:6379
+      COOKIE_SECURE: "false"
+    depends_on:
+      auth-bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Next.js 核心前端与认知溯源工作流应用
+  app:
+    build:
+      context: .
+      args:
+        KNOWTRACE_APP_REVISION: lite-customer-20261114
+        NODE_OPTIONS: --max-old-space-size=1024
+    environment:
+      DATABASE_URL: postgres://knowtrace_workflow:${POSTGRES_PASSWORD:-knowtrace}@single-postgres:5432/knowtrace_workflow
+      EVIDENCE_UPLOAD_DIR: /app/data/uploads/evidence
+      AUTH_ENABLED: "true"
+      AUTH_SERVICE_URL: http://auth:8082
+      AUTH_REGISTRATION_ENABLED: ${AUTH_REGISTRATION_ENABLED:-true}
+      AUTH_COOKIE_SECURE: "false"
+      WORKFLOW_SINGLE_USER_MODE: ${WORKFLOW_SINGLE_USER_MODE:-true}
+      AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-mock}
+      AI_REQUEST_TIMEOUT_MS: "90000"
+      AI_MAX_INPUT_CHARS: "12000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+    ports:
+      - "${KNOWTRACE_HOST:-0.0.0.0}:${KNOWTRACE_PORT:-3000}:3000"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    depends_on:
+      single-postgres:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  knowtrace_lite_postgres_data:
+  knowtrace_lite_redis_data:
